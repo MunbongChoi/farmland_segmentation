@@ -1,15 +1,21 @@
 dataset:
-  root_dir: "01.데이터"
+  root_dir: "../data/01.데이터"
   train:
+    index_cache: "outputs/cache/train_json_targets.json"
     image_dirs:
       - "1.Training/원천데이터/TS_항공사진_FGT_512픽셀"
-    mask_dirs:
-      - "1.Training/라벨링데이터/항공사진_FGT_512픽셀_Tif"
+    label_dirs:
+      - "1.Training/라벨링데이터/항공사진_FGT_512픽셀_Json"
+    meta_dirs:
+      - "1.Training/라벨링데이터/항공사진_FGT_512픽셀_Meta"
   validation:
+    index_cache: "outputs/cache/validation_json_targets.json"
     image_dirs:
       - "2.Validation/원천데이터/VS_항공사진_FGT_512픽셀"
-    mask_dirs:
-      - "2.Validation/라벨링데이터/항공사진_FGT_512픽셀_Tif"
+    label_dirs:
+      - "2.Validation/라벨링데이터/항공사진_FGT_512픽셀_Json"
+    meta_dirs:
+      - "2.Validation/라벨링데이터/항공사진_FGT_512픽셀_Meta"
   # 1024 라벨은 90=농경지만 있어 논/밭 감독학습에 사용할 수 없으므로 제외한다.
   # 제공된 Validation 세트를 재현 가능하게 val/test로 나눈다.
   validation_test_fraction: 0.5
@@ -20,7 +26,8 @@ dataset:
   num_classes: 3
   class_names: ["배경", "논", "밭"]
   raw_class_map: {50: 1, 60: 2}
-  allowed_raw_values: [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+  target_property: "ANN_CD"
+  geometry_all_touched: false
   unmapped_value: 0
   mean: [0.485, 0.456, 0.406]
   std: [0.229, 0.224, 0.225]

@@ -5,11 +5,12 @@
 ## 확인된 데이터 계약
 
 - 학습 입력: 논/밭 구분 라벨이 있는 3밴드 RGB 512×512 항공사진
-- 원시 라벨: `50=논`, `60=밭`; 그 밖의 허용된 토지피복 코드는 배경으로 재매핑
+- 라벨 입력: 기존 `항공사진_FGT_512픽셀_Json/*.json` 폴리곤의 `ANN_CD 50=논`, `60=밭`
+- 논/밭 feature가 하나도 없는 JSON은 데이터셋 인덱스에서 제외하며, 다른 토지피복 polygon은 배경으로 처리
 - 모델 출력: `0=배경`, `1=논`, `2=밭`의 3개 logits
 - 라벨 CRS: EPSG:5186, 512/1024 항공사진 해상도 0.25 m
-- 원천 TIF에는 CRS/Transform이 없으므로 학습은 동일 픽셀 크기의 라벨과 정렬해 사용한다. 독립 추론에서는 공간정보를 추정하지 않으며 `--reference-raster`가 필요하다.
-- 제공 TIF 라벨은 클래스 래스터이므로 진짜 객체 ID는 없다. 후처리의 `instances.tif`는 클래스별 경계 침식 후 connected components로 만든 파생 인스턴스다.
+- 원천 TIF에는 CRS/Transform이 없으므로 기존 `_META.json`의 EPSG, 좌상단 픽셀 중심 좌표, 해상도로 격자를 구성하고 기존 GeoJSON polygon을 직접 rasterize한다. 독립 추론에는 `--reference-meta`가 필요하다.
+- 기존 JSON polygon은 학습 시 `배경/논/밭` semantic mask로 메모리에서 rasterize된다. 추론의 `instances.tif`는 클래스별 경계 침식 후 connected components로 만든 파생 인스턴스다.
 - 별도 1024 자료는 `90=농경지`까지만 표시되어 논/밭을 구분하지 못한다. 이를 배경으로 잘못 학습시키지 않도록 기본 설정에서 제외했다. 학습된 모델의 sliding-window 추론은 1024 이상 임의 크기를 지원한다.
 
 제곱미터 면적 필터는 투영 CRS가 확인된 경우에만 실행된다. EPSG:4326이나 EPSG:3857에서 권위 있는 면적을 계산하지 않는다.
@@ -18,7 +19,7 @@
 
 ```text
 configs/                 데이터, 모델, 실행 설정
-src/datasets/            영상-마스크 매칭, 타일 읽기, 동기 증강
+src/datasets/            영상-기존 JSON/Meta 매칭, polygon rasterization, 동기 증강
 src/metrics/             confusion matrix 기반 평가
 src/utils/               설정, 로그, seed, checkpoint, 시각화
 src/model.py             U-Net 정의
@@ -65,10 +66,12 @@ python -m pip install -r requirements.txt
 기본 설정은 현재 저장소의 다음 폴더를 직접 읽는다.
 
 ```text
-01.데이터/1.Training/원천데이터/TS_항공사진_FGT_512픽셀
-01.데이터/1.Training/라벨링데이터/항공사진_FGT_512픽셀_Tif
-01.데이터/2.Validation/원천데이터/VS_항공사진_FGT_512픽셀
-01.데이터/2.Validation/라벨링데이터/항공사진_FGT_512픽셀_Tif
+../data/01.데이터/1.Training/원천데이터/TS_항공사진_FGT_512픽셀
+../data/01.데이터/1.Training/라벨링데이터/항공사진_FGT_512픽셀_Json
+../data/01.데이터/1.Training/라벨링데이터/항공사진_FGT_512픽셀_Meta
+../data/01.데이터/2.Validation/원천데이터/VS_항공사진_FGT_512픽셀
+../data/01.데이터/2.Validation/라벨링데이터/항공사진_FGT_512픽셀_Json
+../data/01.데이터/2.Validation/라벨링데이터/항공사진_FGT_512픽셀_Meta
 ```
 
 Training은 그대로 사용하고, 제공 Validation은 seed 42로 validation/test에 50:50 분리한다. 파일을 복사하거나 이동하지 않는다.
@@ -131,14 +134,14 @@ JSON에는 pixel accuracy, precision, recall, F1, Dice, 클래스 IoU, mean IoU,
 
 ## 추론
 
-현재 원천 영상은 공간정보가 없으므로 동일 크기의 라벨 TIF를 참조 래스터로 지정한다.
+현재 원천 영상은 공간정보가 없으므로 대응하는 기존 `_META.json`을 지정한다.
 
 ```bash
 python -m src.infer \
   --config configs/default.yaml \
   --checkpoint outputs/checkpoints/best.pt \
-  --input "01.데이터/2.Validation/원천데이터/VS_항공사진_FGT_512픽셀/LC_GS_AP25_34801025_006_2019_FGT.tif" \
-  --reference-raster "01.데이터/2.Validation/라벨링데이터/항공사진_FGT_512픽셀_Tif/LC_GS_AP25_34801025_006_2019_FGT.tif" \
+  --input "../data/01.데이터/2.Validation/원천데이터/VS_항공사진_FGT_512픽셀/LC_GS_AP25_34801025_006_2019_FGT.tif" \
+  --reference-meta "../data/01.데이터/2.Validation/라벨링데이터/항공사진_FGT_512픽셀_Meta/LC_GS_AP25_34801025_006_2019_FGT_META.json" \
   --output-mask outputs/predictions/sample.tif \
   --output-vector outputs/predictions/sample.gpkg \
   --tile-size 512 --overlap 128 --batch-size 8
@@ -166,7 +169,7 @@ TensorBoard는 기본 활성화된다. `logging.wandb: true`로 바꾸고 로그
 ```bash
 docker build -t farmland-segmentation .
 docker run --rm --gpus all \
-  -v "$PWD/01.데이터:/workspace/01.데이터:ro" \
+  -v "$PWD/../data/01.데이터:/data/01.데이터:ro" \
   -v "$PWD/configs:/workspace/configs:ro" \
   -v "$PWD/outputs:/workspace/outputs" \
   farmland-segmentation
@@ -186,8 +189,8 @@ python -m unittest discover -v
 
 ## 오류 해결
 
-- `CRS/Transform이 없습니다`: `--reference-raster`에 동일 크기의 EPSG:5186 라벨/참조 래스터를 전달한다.
-- `영상과 마스크 파일명이 대응되지 않습니다`: 원천/라벨 디렉터리에서 완전히 같은 `.tif` 파일명을 확인한다.
+- `CRS/Transform이 없습니다`: 기존 대응 `_META.json`을 `--reference-meta`로 전달한다.
+- `영상/JSON/Meta 파일명이 대응되지 않습니다`: 영상 stem, 라벨 JSON stem, `_META`를 제외한 Meta stem이 같은지 확인한다.
 - `입력 밴드가 부족합니다`: `dataset.channel_indices`와 실제 밴드 수를 확인한다. 현재 항공영상은 `[1,2,3]` RGB다.
 - CUDA OOM: batch size 또는 tile size를 줄이고 gradient accumulation을 늘린다.
 - 체크포인트 구조 불일치: checkpoint의 model/dataset 설정과 현재 resolved config를 비교한다.

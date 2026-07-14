@@ -17,6 +17,7 @@ from rasterio.transform import Affine
 from rasterio.windows import Window
 from scipy import ndimage
 
+from .datasets.dataset import load_spatial_metadata
 from .model import build_model
 from .utils.checkpoint import load_checkpoint
 from .utils.config import apply_overrides, load_config
@@ -200,8 +201,15 @@ def write_raster(path: str | Path, array: np.ndarray, crs: CRS, transform_value:
         output.write(values.astype(dtype, copy=False))
 
 
-def run_inference(config: dict[str, Any], checkpoint: str, input_path: str, output_mask: str, reference_raster: str | None = None, output_vector: str | None = None) -> None:
-    """Run streaming-tile inference and preserve reference raster georeferencing."""
+def run_inference(
+    config: dict[str, Any],
+    checkpoint: str,
+    input_path: str,
+    output_mask: str,
+    reference_meta: str | None = None,
+    output_vector: str | None = None,
+) -> None:
+    """Run streaming-tile inference using existing Meta JSON georeferencing."""
     logger = logging.getLogger("infer")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = build_model(config).to(device)
@@ -212,21 +220,20 @@ def run_inference(config: dict[str, Any], checkpoint: str, input_path: str, outp
     with rasterio.open(input_path) as source:
         if max(channels) > source.count:
             raise ValueError(f"입력 채널 부족: required={channels}, actual={source.count}")
-        reference = rasterio.open(reference_raster) if reference_raster else source
-        try:
-            if reference.shape != source.shape:
-                raise ValueError("reference raster와 입력 영상 크기가 다릅니다.")
-            crs, transform_value = reference.crs, reference.transform
-            if bool(inference.get("require_georeference", True)) and (crs is None or transform_value.is_identity):
-                raise ValueError("입력 GeoTIFF에 CRS/Transform이 없습니다. --reference-raster로 같은 크기의 공간참조 래스터를 지정하세요.")
+        if reference_meta:
+            metadata = load_spatial_metadata(reference_meta)
+            if (metadata.height, metadata.width) != source.shape:
+                raise ValueError("reference Meta JSON과 입력 영상 크기가 다릅니다.")
+            crs, transform_value = metadata.crs, metadata.transform
+        else:
+            crs, transform_value = source.crs, source.transform
+        if bool(inference.get("require_georeference", True)) and (crs is None or transform_value.is_identity):
+            raise ValueError("입력 GeoTIFF에 CRS/Transform이 없습니다. 기존 대응 _META.json을 --reference-meta로 지정하세요.")
 
-            def reader(row: int, col: int) -> np.ndarray:
-                return source.read(channels, window=Window(col, row, int(inference["tile_size"]), int(inference["tile_size"])), boundless=True, fill_value=0)
+        def reader(row: int, col: int) -> np.ndarray:
+            return source.read(channels, window=Window(col, row, int(inference["tile_size"]), int(inference["tile_size"])), boundless=True, fill_value=0)
 
-            probabilities = sliding_window_predict(reader, source.height, source.width, model, device, int(dataset["num_classes"]), int(inference["tile_size"]), int(inference["overlap"]), int(inference["batch_size"]), list(dataset["mean"]), list(dataset["std"]), str(inference.get("merge", "hann")), bool(inference.get("auto_reduce_batch", True)))
-        finally:
-            if reference is not source:
-                reference.close()
+        probabilities = sliding_window_predict(reader, source.height, source.width, model, device, int(dataset["num_classes"]), int(inference["tile_size"]), int(inference["overlap"]), int(inference["batch_size"]), list(dataset["mean"]), list(dataset["std"]), str(inference.get("merge", "hann")), bool(inference.get("auto_reduce_batch", True)))
     if crs is None:
         raise ValueError("출력 공간정보가 없습니다.")
     raw_mask = probabilities.argmax(0).astype(np.uint8)
@@ -265,7 +272,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", required=True)
     parser.add_argument("--output-mask", required=True)
     parser.add_argument("--output-vector")
-    parser.add_argument("--reference-raster", help="입력에 공간정보가 없을 때 같은 크기의 라벨/참조 GeoTIFF")
+    parser.add_argument("--reference-meta", help="입력에 공간정보가 없을 때 대응하는 기존 _META.json")
     parser.add_argument("--tile-size", type=int)
     parser.add_argument("--overlap", type=int)
     parser.add_argument("--batch-size", type=int)
@@ -280,7 +287,7 @@ def main() -> None:
         if value is not None:
             config["inference"][key] = value
     setup_logger("infer", Path(config["project"]["output_dir"]) / "logs" / "infer.log")
-    run_inference(config, args.checkpoint, args.input, args.output_mask, args.reference_raster, args.output_vector)
+    run_inference(config, args.checkpoint, args.input, args.output_mask, args.reference_meta, args.output_vector)
 
 
 if __name__ == "__main__":

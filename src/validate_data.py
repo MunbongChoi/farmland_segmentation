@@ -13,43 +13,38 @@ from typing import Any
 import numpy as np
 import rasterio
 
-from .datasets.dataset import RasterPair, discover_pairs
+from .datasets.dataset import RasterPair, discover_pairs, load_label_mask
 from .utils.config import apply_overrides, load_config
 from .utils.logger import setup_logger
 
 
 def validate_pair(pair: RasterPair, config: dict[str, Any]) -> tuple[dict[str, Any], Counter[int]]:
-    """Inspect one image/mask pair and return a report plus raw pixel counts."""
-    result: dict[str, Any] = {"image": str(pair.image), "mask": str(pair.mask), "status": "ok", "issues": []}
+    """Inspect one image/JSON/Meta triplet and return rasterized pixel counts."""
+    result: dict[str, Any] = {"image": str(pair.image), "label_json": str(pair.label_json), "meta_json": str(pair.meta_json), "status": "ok", "issues": []}
     counts: Counter[int] = Counter()
     try:
-        with rasterio.open(pair.image) as image, rasterio.open(pair.mask) as mask:
+        mask, metadata, feature_counts = load_label_mask(pair, config)
+        with rasterio.open(pair.image) as image:
             result.update({
                 "width": image.width,
                 "height": image.height,
                 "image_bands": image.count,
                 "image_crs": str(image.crs) if image.crs else None,
-                "mask_crs": str(mask.crs) if mask.crs else None,
-                "mask_transform": tuple(mask.transform),
-                "resolution": tuple(abs(value) for value in mask.res),
+                "label_crs": str(metadata.crs),
+                "label_transform": tuple(metadata.transform),
+                "resolution": metadata.resolution,
+                "target_features": json.dumps(feature_counts, ensure_ascii=False),
             })
-            if image.shape != mask.shape:
-                result["issues"].append("영상과 마스크 크기 불일치")
+            if image.shape != (metadata.height, metadata.width):
+                result["issues"].append("영상과 Meta JSON 크기 불일치")
             if image.count < int(config["input_channels"]):
                 result["issues"].append("입력 채널 부족")
-            if mask.count != 1:
-                result["issues"].append("마스크가 단일 밴드가 아님")
-            if mask.crs is None or mask.transform.is_identity:
-                result["issues"].append("마스크 공간정보 없음")
-            values, frequencies = np.unique(mask.read(1), return_counts=True)
+            if metadata.crs is None or metadata.transform.is_identity:
+                result["issues"].append("JSON 공간정보 없음")
+            values, frequencies = np.unique(mask, return_counts=True)
             counts.update({int(value): int(count) for value, count in zip(values, frequencies)})
-            allowed = set(int(value) for value in config.get("allowed_raw_values", config["raw_class_map"]))
-            invalid = sorted(int(value) for value in values if int(value) not in allowed)
-            result["invalid_raw_values"] = invalid
-            if invalid:
-                result["issues"].append(f"허용되지 않은 클래스 값: {invalid}")
-            foreground = sum(counts[value] for value in config["raw_class_map"])
-            result["foreground_fraction"] = foreground / max(1, mask.width * mask.height)
+            foreground = int((mask > 0).sum())
+            result["foreground_fraction"] = foreground / max(1, metadata.width * metadata.height)
             if foreground == 0:
                 result["issues"].append("논/밭 픽셀이 없는 마스크")
     except Exception as error:
@@ -72,8 +67,8 @@ def write_reports(rows: list[dict[str, Any]], pixel_counts: Counter[int], output
     summary = {
         "checked_pairs": len(rows),
         "warnings": sum(row["status"] != "ok" for row in rows),
-        "raw_class_pixels": {str(key): value for key, value in sorted(pixel_counts.items())},
-        "raw_class_ratios": {str(key): value / max(1, total) for key, value in sorted(pixel_counts.items())},
+        "rasterized_class_pixels": {str(key): value for key, value in sorted(pixel_counts.items())},
+        "rasterized_class_ratios": {str(key): value / max(1, total) for key, value in sorted(pixel_counts.items())},
     }
     (output / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -90,7 +85,7 @@ def main() -> None:
     logger = setup_logger("validate_data", Path(args.output) / "validation.log")
     dataset = config["dataset"]
     split_config = dataset["train" if args.split == "train" else "validation"]
-    pairs = discover_pairs(dataset["root_dir"], split_config)
+    pairs = discover_pairs(dataset["root_dir"], split_config, dataset["raw_class_map"], dataset.get("target_property", "ANN_CD"))
     if args.max_samples > 0:
         pairs = pairs[: args.max_samples]
     rows: list[dict[str, Any]] = []

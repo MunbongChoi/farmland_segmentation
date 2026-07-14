@@ -17,18 +17,17 @@ def main() -> None:
     args = parser.parse_args()
     config = load_config(args.config)
     dataset = config["dataset"]
-    train = discover_pairs(dataset["root_dir"], dataset["train"])
-    validation_all = discover_pairs(dataset["root_dir"], dataset["validation"])
+    train = discover_pairs(dataset["root_dir"], dataset["train"], dataset["raw_class_map"], dataset.get("target_property", "ANN_CD"))
+    validation_all = discover_pairs(dataset["root_dir"], dataset["validation"], dataset["raw_class_map"], dataset.get("target_property", "ANN_CD"))
     validation, test = deterministic_partition(validation_all, float(dataset["validation_test_fraction"]), int(config["project"]["seed"]))
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     for name, pairs in (("train", train), ("validation", validation), ("test", test)):
         with (output / f"{name}.csv").open("w", newline="", encoding="utf-8-sig") as stream:
             writer = csv.writer(stream)
-            writer.writerow(["image", "mask"])
-            writer.writerows((str(pair.image), str(pair.mask)) for pair in pairs)
+            writer.writerow(["image", "label_json", "meta_json"])
+            writer.writerows((str(pair.image), str(pair.label_json), str(pair.meta_json)) for pair in pairs)
 
 
 if __name__ == "__main__":
     main()
-
