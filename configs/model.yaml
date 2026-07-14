@@ -1,0 +1,21 @@
+model:
+  name: unet
+  input_channels: 3
+  num_classes: 3
+  base_channels: 32
+  bilinear: true
+  pretrained: false
+
+loss:
+  weights:
+    cross_entropy: 1.0
+    binary_cross_entropy: 0.0
+    dice: 1.0
+    focal: 0.0
+    tversky: 0.0
+    boundary: 0.1
+  class_weights: null
+  focal_gamma: 2.0
+  tversky_alpha: 0.3
+  tversky_beta: 0.7
+

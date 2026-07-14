@@ -1,0 +1,58 @@
+_base_: [dataset.yaml, model.yaml]
+
+project:
+  name: farmland_unet
+  seed: 42
+  output_dir: outputs
+
+training:
+  epochs: 100
+  batch_size: 8
+  validation_batch_size: 8
+  num_workers: 4
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  mixed_precision: true
+  gradient_accumulation_steps: 1
+  gradient_clip_norm: 1.0
+  early_stopping_patience: 15
+  monitor: mean_iou_no_background
+  scheduler: cosine
+  min_learning_rate: 0.000001
+  pin_memory: true
+  persistent_workers: true
+  resume: null
+
+evaluation:
+  include_background: true
+
+inference:
+  tile_size: 512
+  overlap: 128
+  batch_size: 8
+  merge: hann
+  auto_reduce_batch: true
+  require_georeference: true
+  confidence_threshold: 0.5
+
+postprocess:
+  enabled: true
+  min_area: {1: 100.0, 2: 100.0}
+  min_area_unit: m2
+  fill_holes: true
+  opening_iterations: 0
+  closing_iterations: 1
+  boundary_smoothing_iterations: 1
+  boundary_erosion_pixels: 1
+  save_instances: true
+
+output:
+  save_probability_map: true
+  save_raw_mask: true
+  save_postprocessed_mask: true
+  save_vector: true
+
+logging:
+  tensorboard: true
+  wandb: false
+  wandb_project: farmland-segmentation

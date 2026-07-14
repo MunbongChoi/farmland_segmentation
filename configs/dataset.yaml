@@ -1,0 +1,38 @@
+dataset:
+  root_dir: "01.데이터"
+  train:
+    image_dirs:
+      - "1.Training/원천데이터/TS_항공사진_FGT_512픽셀"
+    mask_dirs:
+      - "1.Training/라벨링데이터/항공사진_FGT_512픽셀_Tif"
+  validation:
+    image_dirs:
+      - "2.Validation/원천데이터/VS_항공사진_FGT_512픽셀"
+    mask_dirs:
+      - "2.Validation/라벨링데이터/항공사진_FGT_512픽셀_Tif"
+  # 1024 라벨은 90=농경지만 있어 논/밭 감독학습에 사용할 수 없으므로 제외한다.
+  # 제공된 Validation 세트를 재현 가능하게 val/test로 나눈다.
+  validation_test_fraction: 0.5
+  input_channels: 3
+  channel_indices: [1, 2, 3]
+  tile_size: 512
+  ignore_index: 255
+  num_classes: 3
+  class_names: ["배경", "논", "밭"]
+  raw_class_map: {50: 1, 60: 2}
+  allowed_raw_values: [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+  unmapped_value: 0
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+
+augmentation:
+  horizontal_flip: 0.5
+  vertical_flip: 0.5
+  rotate_90: 0.5
+  random_crop: true
+  brightness_contrast: 0.3
+  gaussian_noise: 0.15
+  blur: 0.1
+  color_jitter: 0.2
+  random_scale: 0.2
+  scale_limit: 0.15
