@@ -112,6 +112,12 @@ python -m src.train --config configs/default.yaml
 torchrun --standalone --nproc_per_node=2 -m src.train --config configs/default.yaml
 ```
 
+DDP 실행 전 반드시 CUDA가 두 GPU를 인식하는지 확인한다. `False`이면 `torchrun`을 실행하지 않는다.
+
+```bash
+python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.device_count())"
+```
+
 체크포인트 재개와 CLI 우선 덮어쓰기:
 
 ```bash
@@ -193,4 +199,5 @@ python -m unittest discover -v
 - `영상/JSON/Meta 파일명이 대응되지 않습니다`: 영상 stem, 라벨 JSON stem, `_META`를 제외한 Meta stem이 같은지 확인한다.
 - `입력 밴드가 부족합니다`: `dataset.channel_indices`와 실제 밴드 수를 확인한다. 현재 항공영상은 `[1,2,3]` RGB다.
 - CUDA OOM: batch size 또는 tile size를 줄이고 gradient accumulation을 늘린다.
+- `gloo ... Connection closed by peer`: 다른 rank가 먼저 실패한 후속 오류다. 현재 코드는 rank0 원본 traceback을 기록하며, CUDA가 보이지 않는 CPU DDP는 시작 전에 차단한다. 컨테이너 GPU 연결과 CUDA PyTorch 설치를 먼저 확인한다.
 - 체크포인트 구조 불일치: checkpoint의 model/dataset 설정과 현재 resolved config를 비교한다.

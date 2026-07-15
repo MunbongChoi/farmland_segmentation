@@ -15,6 +15,7 @@ from typing import Any
 import torch
 from torch import nn
 from torch.nn.parallel import DistributedDataParallel
+from torch.distributed.elastic.multiprocessing.errors import record
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm.auto import tqdm
 
@@ -36,11 +37,26 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def setup_distributed() -> tuple[int, int, int]:
+def setup_distributed(allow_cpu_ddp: bool = False) -> tuple[int, int, int]:
     """Initialize torchrun environment and return rank/world/local-rank."""
     rank = int(os.environ.get("RANK", "0"))
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    if world_size > 1 and not torch.cuda.is_available() and not allow_cpu_ddp:
+        raise RuntimeError(
+            "torchrun 다중 프로세스가 감지됐지만 CUDA를 사용할 수 없습니다. "
+            "컨테이너에 GPU를 연결하고 CUDA PyTorch를 설치한 뒤 torch.cuda.is_available()==True인지 확인하세요. "
+            "CPU 학습은 torchrun 없이 `python -m src.train ...`을 사용하세요."
+        )
+    if world_size > 1 and torch.cuda.is_available():
+        device_count = torch.cuda.device_count()
+        if local_rank >= device_count:
+            raise RuntimeError(
+                f"LOCAL_RANK={local_rank}이지만 현재 프로세스에서 보이는 GPU는 {device_count}개입니다. "
+                "CUDA_VISIBLE_DEVICES와 torchrun --nproc_per_node 값을 확인하세요."
+            )
+        if not torch.distributed.is_nccl_available():
+            raise RuntimeError("CUDA DDP에는 NCCL 지원 PyTorch가 필요합니다. CUDA용 공식 PyTorch를 설치하세요.")
     if world_size > 1 and not torch.distributed.is_initialized():
         backend = "nccl" if torch.cuda.is_available() else "gloo"
         torch.distributed.init_process_group(backend=backend, init_method="env://")
@@ -144,12 +160,13 @@ def build_scheduler(optimizer: torch.optim.Optimizer, settings: dict[str, Any]) 
     raise ValueError(f"지원하지 않는 scheduler입니다: {name}")
 
 
+@record
 def main() -> None:
     args = parse_args()
     config = apply_overrides(load_config(args.config), args.set)
     if args.resume:
         config["training"]["resume"] = args.resume
-    rank, world_size, local_rank = setup_distributed()
+    rank, world_size, local_rank = setup_distributed(bool(config["training"].get("allow_cpu_ddp", False)))
     device = select_device(local_rank)
     seed_everything(int(config["project"]["seed"]) + rank)
     output = Path(config["project"]["output_dir"])

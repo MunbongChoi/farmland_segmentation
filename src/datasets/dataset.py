@@ -7,6 +7,7 @@ import logging
 import os
 import random
 import re
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,7 @@ import rasterio
 import torch
 from rasterio.crs import CRS
 from rasterio.features import rasterize
+from rasterio.errors import NotGeoreferencedWarning
 from rasterio.transform import Affine, from_origin
 from rasterio.windows import Window
 from shapely.geometry import mapping, shape
@@ -238,14 +240,17 @@ class GeoTiffPairDataset(Dataset[dict[str, Any]]):
     def __getitem__(self, index: int) -> dict[str, Any]:
         pair = self.pairs[index]
         mask, metadata, _ = load_label_mask(pair, self.config)
-        with rasterio.open(pair.image) as image_source:
-            if image_source.shape != (metadata.height, metadata.width):
-                raise ValueError(f"영상과 Meta JSON 크기가 다릅니다: {pair.image} / {pair.meta_json}")
-            if max(self.channels) > image_source.count:
-                raise ValueError(f"입력 밴드가 부족합니다: {pair.image} (bands={image_source.count})")
-            row, col = self._window_origin(image_source.height, image_source.width)
-            window = Window(col, row, self.tile_size, self.tile_size)
-            image = image_source.read(self.channels, window=window, boundless=True, fill_value=0)
+        # Source imagery intentionally has no embedded georeferencing; Meta JSON is authoritative.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", NotGeoreferencedWarning)
+            with rasterio.open(pair.image) as image_source:
+                if image_source.shape != (metadata.height, metadata.width):
+                    raise ValueError(f"영상과 Meta JSON 크기가 다릅니다: {pair.image} / {pair.meta_json}")
+                if max(self.channels) > image_source.count:
+                    raise ValueError(f"입력 밴드가 부족합니다: {pair.image} (bands={image_source.count})")
+                row, col = self._window_origin(image_source.height, image_source.width)
+                window = Window(col, row, self.tile_size, self.tile_size)
+                image = image_source.read(self.channels, window=window, boundless=True, fill_value=0)
         mask_tile = np.full((self.tile_size, self.tile_size), int(self.config.get("unmapped_value", 0)), dtype=np.int64)
         crop = mask[row : row + self.tile_size, col : col + self.tile_size]
         mask_tile[: crop.shape[0], : crop.shape[1]] = crop

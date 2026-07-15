@@ -21,6 +21,8 @@ training:
   min_learning_rate: 0.000001
   pin_memory: true
   persistent_workers: true
+  # 실수로 torchrun CPU 다중 프로세스를 실행하는 것을 방지한다.
+  allow_cpu_ddp: false
   resume: null
 
 evaluation:
