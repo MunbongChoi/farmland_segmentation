@@ -16,6 +16,6 @@ dependencies:
   - geopandas>=0.14
   - pyogrio>=0.7
   - tensorboard>=2.16
+  - tqdm>=4.66
   - pytest>=8
   - pip
-

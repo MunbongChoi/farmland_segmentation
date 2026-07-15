@@ -48,9 +48,14 @@ class SegmentationMetrics:
         f1 = 2 * precision * recall / (precision + recall).clamp_min(1e-12)
         selected = slice(None) if include_background else slice(1, None)
         total = matrix.sum().clamp_min(1)
+        foreground_support = support[1:].sum()
+        foreground_correct = tp[1:].sum()
         return {
             "confusion_matrix": matrix.long().tolist(),
             "pixel_accuracy": float(tp.sum() / total),
+            # Background usually dominates aerial tiles. Report accuracy over
+            # pixels whose ground-truth class is paddy/field separately.
+            "foreground_pixel_accuracy": float(foreground_correct / foreground_support.clamp_min(1)),
             "precision_per_class": precision.tolist(),
             "recall_per_class": recall.tolist(),
             "f1_per_class": f1.tolist(),
@@ -83,4 +88,3 @@ def save_class_metrics(metrics: dict[str, Any], class_names: list[str], path: st
         writer.writerows(rows)
     foreground = rows[1:] if len(rows) > 1 else rows
     return min(foreground, key=lambda row: row["iou"])["class_name"]
-

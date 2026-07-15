@@ -17,7 +17,11 @@ from torch import nn
 from torch.nn.parallel import DistributedDataParallel
 from torch.distributed.elastic.multiprocessing.errors import record
 from torch.utils.data import DataLoader, DistributedSampler
-from tqdm.auto import tqdm
+
+try:
+    from tqdm.auto import tqdm as tqdm_progress
+except ImportError:  # Progress display is optional; training must still run.
+    tqdm_progress = None
 
 from .datasets.dataset import build_datasets
 from .evaluate import evaluate_model
@@ -107,7 +111,7 @@ def train_epoch(
     accumulation = int(settings["gradient_accumulation_steps"])
     mixed = bool(settings["mixed_precision"]) and device.type == "cuda"
     total = torch.zeros(2, dtype=torch.float64, device=device)
-    progress = tqdm(loader, desc="train", leave=False, disable=not show_progress)
+    progress = tqdm_progress(loader, desc="train", leave=False, disable=not show_progress) if tqdm_progress else loader
     for step, batch in enumerate(progress):
         images = batch["image"].to(device, non_blocking=True)
         masks = batch["mask"].to(device, non_blocking=True)
@@ -130,7 +134,7 @@ def train_epoch(
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
         total += torch.tensor([float(raw_loss.detach()) * images.shape[0], images.shape[0]], device=device)
-        if show_progress:
+        if show_progress and tqdm_progress is not None:
             progress.set_postfix(loss=f"{float(raw_loss.detach()):.4f}")
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         torch.distributed.all_reduce(total)

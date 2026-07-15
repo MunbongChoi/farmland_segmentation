@@ -54,6 +54,8 @@ python -m pip install torch==2.5.1 torchvision==0.20.1 --index-url https://downl
 python -m pip install -r requirements.txt
 ```
 
+진행률 표시용 `tqdm`은 선택 의존성이다. 설치되지 않아도 학습은 실행되며 진행 막대만 비활성화된다.
+
 CPU 검증 환경은 PyTorch CPU wheel을 설치한 뒤 동일한 `requirements.txt`를 사용한다.
 
 ```bash
@@ -123,7 +125,7 @@ python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda
 ```bash
 python -m src.train --config configs/default.yaml \
   --resume outputs/checkpoints/last.pt \
-  --set training.batch_size=4 \
+  --set training.batch_size=4 \ㄱ
   --set training.epochs=150
 ```
 
@@ -136,7 +138,7 @@ python -m src.validate --config configs/default.yaml --checkpoint outputs/checkp
 python -m src.test --config configs/default.yaml --checkpoint outputs/checkpoints/best.pt
 ```
 
-JSON에는 pixel accuracy, precision, recall, F1, Dice, 클래스 IoU, mean IoU, frequency-weighted IoU, confusion matrix가 저장된다. CSV에는 클래스별 지표가 저장되고 최저 IoU 클래스가 로그에 표시된다.
+JSON에는 전체 pixel accuracy와 배경을 제외한 `foreground_pixel_accuracy`, precision, recall, F1, Dice, 클래스 IoU, mean IoU, frequency-weighted IoU, confusion matrix가 저장된다. CSV에는 클래스별 지표가 저장되고 최저 IoU 클래스가 로그에 표시된다.
 
 ## 추론
 
@@ -200,4 +202,5 @@ python -m unittest discover -v
 - `입력 밴드가 부족합니다`: `dataset.channel_indices`와 실제 밴드 수를 확인한다. 현재 항공영상은 `[1,2,3]` RGB다.
 - CUDA OOM: batch size 또는 tile size를 줄이고 gradient accumulation을 늘린다.
 - `gloo ... Connection closed by peer`: 다른 rank가 먼저 실패한 후속 오류다. 현재 코드는 rank0 원본 traceback을 기록하며, CUDA가 보이지 않는 CPU DDP는 시작 전에 차단한다. 컨테이너 GPU 연결과 CUDA PyTorch 설치를 먼저 확인한다.
+- `ModuleNotFoundError: tqdm`: 최신 코드에서는 진행 막대만 자동 비활성화된다. 기존 코드라면 `python -m pip install tqdm`을 실행한다.
 - 체크포인트 구조 불일치: checkpoint의 model/dataset 설정과 현재 resolved config를 비교한다.
