@@ -1,10 +1,14 @@
 model:
-  name: unet
+  name: segformer
   input_channels: 3
   num_classes: 3
+  checkpoint: nvidia/mit-b2
+  pretrained: true
+  local_files_only: false
+  gradient_checkpointing: false
+  # U-Net으로 되돌릴 때 사용하는 설정
   base_channels: 32
   bilinear: true
-  pretrained: false
 
 loss:
   weights:
@@ -18,4 +22,3 @@ loss:
   focal_gamma: 2.0
   tversky_alpha: 0.3
   tversky_beta: 0.7
-

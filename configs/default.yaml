@@ -1,9 +1,9 @@
 _base_: [dataset.yaml, model.yaml]
 
 project:
-  name: farmland_unet
+  name: farmland_segformer_b2
   seed: 42
-  output_dir: outputs
+  output_dir: outputs/segformer_b2
 
 training:
   epochs: 100

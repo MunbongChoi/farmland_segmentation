@@ -1,12 +1,24 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import torch
+from torch import nn
 
 from src.losses import CompositeSegmentationLoss
 from src.metrics.segmentation_metrics import SegmentationMetrics
-from src.model import UNet
+from src.model import SegFormerAdapter, UNet, build_model
+
+
+class DummySegFormer(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.head = nn.Conv2d(3, 3, kernel_size=1, stride=4)
+
+    def forward(self, pixel_values: torch.Tensor) -> SimpleNamespace:
+        return SimpleNamespace(logits=self.head(pixel_values))
 
 
 class ModelLossMetricTests(unittest.TestCase):
@@ -16,6 +28,42 @@ class ModelLossMetricTests(unittest.TestCase):
         with torch.inference_mode():
             output = model(torch.randn(2, 3, 65, 67))
         self.assertEqual(tuple(output.shape), (2, 3, 65, 67))
+
+    def test_segformer_adapter_restores_mask_resolution(self) -> None:
+        model = SegFormerAdapter(DummySegFormer()).eval()
+        with torch.inference_mode():
+            output = model(torch.randn(2, 3, 65, 67))
+        self.assertEqual(tuple(output.shape), (2, 3, 65, 67))
+
+    @patch("src.model._load_segformer_model")
+    def test_build_model_selects_segformer(self, loader: Mock) -> None:
+        loader.return_value = DummySegFormer()
+        config = {
+            "model": {
+                "name": "segformer",
+                "input_channels": 3,
+                "num_classes": 3,
+                "checkpoint": "nvidia/mit-b2",
+                "pretrained": True,
+            },
+            "dataset": {
+                "input_channels": 3,
+                "num_classes": 3,
+                "class_names": ["배경", "논", "밭"],
+                "ignore_index": 255,
+            },
+        }
+        model = build_model(config)
+        self.assertIsInstance(model, SegFormerAdapter)
+        loader.assert_called_once_with(
+            checkpoint="nvidia/mit-b2",
+            input_channels=3,
+            num_classes=3,
+            class_names=["배경", "논", "밭"],
+            ignore_index=255,
+            pretrained=True,
+            local_files_only=False,
+        )
 
     def test_composite_loss_is_finite(self) -> None:
         config = {"weights": {"cross_entropy": 1.0, "binary_cross_entropy": 0.0, "dice": 1.0, "focal": 0.0, "tversky": 0.0, "boundary": 0.1}}

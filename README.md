@@ -1,6 +1,6 @@
-# 논·밭 U-Net GeoTIFF Segmentation
+# 논·밭 SegFormer/U-Net GeoTIFF Segmentation
 
-항공 RGB GeoTIFF에서 논과 밭을 분할하는 PyTorch 파이프라인이다. 데이터 검증, 통계/타일 전처리, 학습, 검증, 테스트, sliding-window 추론, 형태학적 후처리, 인스턴스 연결요소 생성 및 GIS 벡터 출력을 독립 CLI로 제공한다.
+항공 RGB GeoTIFF에서 논과 밭을 분할하는 PyTorch 파이프라인이다. 기본 모델은 ImageNet 사전학습 `nvidia/mit-b2` encoder를 사용하는 SegFormer이며 U-Net도 선택할 수 있다. 데이터 검증, 통계/타일 전처리, 학습, 검증, 테스트, sliding-window 추론, 형태학적 후처리, 인스턴스 연결요소 생성 및 GIS 벡터 출력을 독립 CLI로 제공한다.
 
 ## 확인된 데이터 계약
 
@@ -22,11 +22,12 @@ configs/                 데이터, 모델, 실행 설정
 src/datasets/            영상-기존 JSON/Meta 매칭, polygon rasterization, 동기 증강
 src/metrics/             confusion matrix 기반 평가
 src/utils/               설정, 로그, seed, checkpoint, 시각화
-src/model.py             U-Net 정의
+src/model.py             SegFormer 어댑터, U-Net 및 모델 팩토리
 src/train.py             CPU/단일 GPU/DDP 학습
 src/validate.py          validation 평가
 src/test.py              고정 seed로 분리한 test 평가
 src/infer.py             GeoTIFF sliding-window 추론 및 GIS 출력
+src/infer_visualize.py   추론 실행, 공간 정합 검증 및 PNG 결과 시각화
 src/vectorize.py         추론 프로세스와 격리된 래스터 polygonization
 src/validate_data.py     데이터 품질/공간정보 보고서
 src/prepare_data.py      통계 계산과 선택적 물리 타일 생성
@@ -98,9 +99,11 @@ python -m src.prepare_data --config configs/default.yaml \
   --overlap 128 --max-background-fraction 0.95
 ```
 
-계산된 `outputs/data_stats.json`의 mean/std를 `configs/dataset.yaml`에 반영한다.
+계산된 `outputs/segformer_b2/data_stats.json`의 mean/std를 `configs/dataset.yaml`에 반영한다.
 
 ## 학습
+
+기본 `configs/model.yaml`은 `model.name=segformer`, `checkpoint=nvidia/mit-b2`다. 첫 실행에는 Hugging Face Hub에서 가중치를 내려받으며 이후 로컬 캐시를 사용한다. 폐쇄망에서는 미리 캐시한 뒤 `model.local_files_only=true`를 설정한다. SegFormer의 저해상도 logits는 JSON raster mask와 정확히 맞도록 모델 어댑터에서 입력 크기로 복원된다.
 
 CPU 또는 단일 GPU:
 
@@ -124,18 +127,26 @@ python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda
 
 ```bash
 python -m src.train --config configs/default.yaml \
-  --resume outputs/checkpoints/last.pt \
-  --set training.batch_size=4 \ㄱ
+  --resume outputs/segformer_b2/checkpoints/last.pt \
+  --set training.batch_size=4 \
   --set training.epochs=150
 ```
 
-`outputs/checkpoints/best.pt`와 `last.pt`에는 모델, optimizer, scheduler, AMP scaler, epoch, best metric, 모델/데이터 설정, 클래스 목록, Git hash 및 UTC 저장시각이 포함된다.
+기존 U-Net으로 학습하려면 다음처럼 모델과 사전학습 옵션을 함께 변경한다.
+
+```bash
+python -m src.train --config configs/default.yaml \
+  --set model.name=unet \
+  --set model.pretrained=false
+```
+
+`outputs/segformer_b2/checkpoints/best.pt`와 `last.pt`에는 모델, optimizer, scheduler, AMP scaler, epoch, best metric, 모델/데이터 설정, 클래스 목록, Git hash 및 UTC 저장시각이 포함된다. 기존 U-Net 체크포인트와 섞이지 않도록 SegFormer 출력 폴더를 분리한다.
 
 ## 검증과 테스트
 
 ```bash
-python -m src.validate --config configs/default.yaml --checkpoint outputs/checkpoints/best.pt
-python -m src.test --config configs/default.yaml --checkpoint outputs/checkpoints/best.pt
+python -m src.validate --config configs/default.yaml --checkpoint outputs/segformer_b2/checkpoints/best.pt
+python -m src.test --config configs/default.yaml --checkpoint outputs/segformer_b2/checkpoints/best.pt
 ```
 
 JSON에는 전체 pixel accuracy와 배경을 제외한 `foreground_pixel_accuracy`, precision, recall, F1, Dice, 클래스 IoU, mean IoU, frequency-weighted IoU, confusion matrix가 저장된다. CSV에는 클래스별 지표가 저장되고 최저 IoU 클래스가 로그에 표시된다.
@@ -147,11 +158,11 @@ JSON에는 전체 pixel accuracy와 배경을 제외한 `foreground_pixel_accura
 ```bash
 python -m src.infer \
   --config configs/default.yaml \
-  --checkpoint outputs/checkpoints/best.pt \
+  --checkpoint outputs/segformer_b2/checkpoints/best.pt \
   --input "../data/01.데이터/2.Validation/원천데이터/VS_항공사진_FGT_512픽셀/LC_GS_AP25_34801025_006_2019_FGT.tif" \
   --reference-meta "../data/01.데이터/2.Validation/라벨링데이터/항공사진_FGT_512픽셀_Meta/LC_GS_AP25_34801025_006_2019_FGT_META.json" \
-  --output-mask outputs/predictions/sample.tif \
-  --output-vector outputs/predictions/sample.gpkg \
+  --output-mask outputs/segformer_b2/predictions/sample.tif \
+  --output-vector outputs/segformer_b2/predictions/sample.gpkg \
   --tile-size 512 --overlap 128 --batch-size 8
 ```
 
@@ -165,6 +176,29 @@ python -m src.infer \
 
 GPU OOM 시 추론 batch size는 자동으로 절반씩 감소한다. 타일 overlap은 덮어쓰지 않고 Hann 가중 확률 평균으로 병합한다.
 전경 예측 확률이 `inference.confidence_threshold`보다 낮으면 배경으로 되돌린다.
+
+### 추론 결과 시각화
+
+다음 명령은 SegFormer 추론을 수행한 뒤 원본 RGB, 컬러 mask, overlay, 최대 클래스 신뢰도와 논·밭 확률 PNG를 한 번에 생성한다. 원본 TIF에 공간정보가 없으므로 `_META.json`과 출력 raster의 CRS·Transform·크기가 일치하지 않으면 시각화를 중단한다.
+
+```bash
+python -m src.infer_visualize \
+  --config configs/default.yaml \
+  --checkpoint outputs/segformer_b2/checkpoints/best.pt \
+  --input "../data/01.데이터/2.Validation/원천데이터/VS_항공사진_FGT_512픽셀/LC_GS_AP25_34801025_006_2019_FGT.tif" \
+  --reference-meta "../data/01.데이터/2.Validation/라벨링데이터/항공사진_FGT_512픽셀_Meta/LC_GS_AP25_34801025_006_2019_FGT_META.json" \
+  --output-dir outputs/segformer_b2/predictions/visualized_sample \
+  --batch-size 8
+```
+
+PNG 출력:
+
+- `*_rgb.png`: 표시용 RGB
+- `*_mask_color.png`: 초록=논, 주황=밭
+- `*_overlay.png`: 배경은 원본 그대로 유지한 mask overlay
+- `*_confidence.png`: 픽셀별 최대 클래스 확률
+- `*_prob_1_paddy.png`, `*_prob_2_field.png`: 클래스별 확률
+- `*_panel.png`: RGB, mask, overlay, confidence 2×2 비교
 
 ## Loss 선택
 

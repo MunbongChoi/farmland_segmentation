@@ -1,4 +1,4 @@
-"""U-Net model construction (kept separate from train and infer entry points)."""
+"""Semantic segmentation models (kept separate from train and infer entry points)."""
 
 from __future__ import annotations
 
@@ -85,23 +85,106 @@ class UNet(nn.Module):
         return self.outc(self.up4(self.up3(self.up2(self.up1(x5, x4), x3), x2), x1))
 
 
+class SegFormerAdapter(nn.Module):
+    """Expose Hugging Face SegFormer as full-resolution logits.
+
+    Hugging Face returns logits below the input resolution. The rest of this
+    project expects every model to return ``B,C,H,W`` logits that align exactly
+    with the rasterized JSON mask.
+    """
+
+    def __init__(self, model: nn.Module) -> None:
+        super().__init__()
+        self.model = model
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        logits = self.model(pixel_values=inputs).logits
+        if logits.shape[-2:] != inputs.shape[-2:]:
+            logits = F.interpolate(logits, size=inputs.shape[-2:], mode="bilinear", align_corners=False)
+        return logits
+
+
+def _load_segformer_model(
+    checkpoint: str,
+    input_channels: int,
+    num_classes: int,
+    class_names: list[str],
+    ignore_index: int,
+    pretrained: bool,
+    local_files_only: bool,
+) -> nn.Module:
+    """Load a SegFormer backbone/config while keeping Transformers optional."""
+    try:
+        from transformers import SegformerConfig, SegformerForSemanticSegmentation
+    except Exception as error:
+        raise RuntimeError(
+            "SegFormer를 사용하려면 정상적인 transformers/safetensors 설치가 필요합니다. "
+            "`python -m pip install --upgrade --force-reinstall numpy transformers safetensors`를 실행하세요."
+        ) from error
+
+    if pretrained and input_channels != 3:
+        raise ValueError("사전학습 SegFormer는 RGB 3채널 입력만 지원합니다. model.input_channels=3을 사용하세요.")
+    if len(class_names) != num_classes:
+        raise ValueError("dataset.class_names 길이는 model.num_classes와 같아야 합니다.")
+
+    id2label = {index: name for index, name in enumerate(class_names)}
+    label2id = {name: index for index, name in id2label.items()}
+    common = {
+        "num_labels": num_classes,
+        "id2label": id2label,
+        "label2id": label2id,
+        "semantic_loss_ignore_index": ignore_index,
+    }
+    try:
+        if pretrained:
+            return SegformerForSemanticSegmentation.from_pretrained(
+                checkpoint,
+                ignore_mismatched_sizes=True,
+                local_files_only=local_files_only,
+                **common,
+            )
+        hf_config = SegformerConfig.from_pretrained(checkpoint, local_files_only=local_files_only, **common)
+        hf_config.num_channels = input_channels
+        return SegformerForSemanticSegmentation(hf_config)
+    except (OSError, ValueError) as error:
+        source = "로컬 캐시" if local_files_only else "Hugging Face Hub 또는 로컬 캐시"
+        raise RuntimeError(f"SegFormer checkpoint '{checkpoint}'를 {source}에서 불러오지 못했습니다: {error}") from error
+
+
 def build_model(config: dict[str, Any]) -> nn.Module:
     """Build the configured model and validate channel/class contracts."""
     model_config = config["model"]
-    if str(model_config["name"]).lower() != "unet":
-        raise ValueError(f"지원하지 않는 모델입니다: {model_config['name']}")
-    if bool(model_config.get("pretrained", False)):
-        raise ValueError("현재 U-Net은 사전학습 가중치를 제공하지 않습니다. model.pretrained=false를 사용하세요.")
     dataset_config = config.get("dataset", {})
     for key in ("input_channels", "num_classes"):
         if key in dataset_config and int(model_config[key]) != int(dataset_config[key]):
             raise ValueError(f"model.{key}와 dataset.{key}가 다릅니다.")
-    return UNet(
-        input_channels=int(model_config["input_channels"]),
-        num_classes=int(model_config["num_classes"]),
-        base_channels=int(model_config.get("base_channels", 32)),
-        bilinear=bool(model_config.get("bilinear", True)),
-    )
+
+    name = str(model_config["name"]).lower().replace("-", "").replace("_", "")
+    input_channels = int(model_config["input_channels"])
+    num_classes = int(model_config["num_classes"])
+    if name == "unet":
+        if bool(model_config.get("pretrained", False)):
+            raise ValueError("현재 U-Net은 사전학습 가중치를 제공하지 않습니다. model.pretrained=false를 사용하세요.")
+        return UNet(
+            input_channels=input_channels,
+            num_classes=num_classes,
+            base_channels=int(model_config.get("base_channels", 32)),
+            bilinear=bool(model_config.get("bilinear", True)),
+        )
+    if name == "segformer":
+        model = _load_segformer_model(
+            checkpoint=str(model_config.get("checkpoint", "nvidia/mit-b2")),
+            input_channels=input_channels,
+            num_classes=num_classes,
+            class_names=list(dataset_config.get("class_names", [str(index) for index in range(num_classes)])),
+            ignore_index=int(dataset_config.get("ignore_index", 255)),
+            pretrained=bool(model_config.get("pretrained", True)),
+            local_files_only=bool(model_config.get("local_files_only", False)),
+        )
+        if bool(model_config.get("gradient_checkpointing", False)):
+            model.gradient_checkpointing_enable()
+        return SegFormerAdapter(model)
+    raise ValueError(f"지원하지 않는 모델입니다: {model_config['name']} (지원: unet, segformer)")
 
 
 def parameter_counts(model: nn.Module) -> tuple[int, int]:
@@ -109,4 +192,3 @@ def parameter_counts(model: nn.Module) -> tuple[int, int]:
     total = sum(parameter.numel() for parameter in model.parameters())
     trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
     return total, trainable
-
