@@ -1,6 +1,6 @@
 # 논·밭 SegFormer/U-Net GeoTIFF Segmentation
 
-항공 RGB GeoTIFF에서 논과 밭을 분할하는 PyTorch 파이프라인이다. 기본 모델은 ImageNet 사전학습 `nvidia/mit-b2` encoder를 사용하는 SegFormer이며 U-Net도 선택할 수 있다. 데이터 검증, 통계/타일 전처리, 학습, 검증, 테스트, sliding-window 추론, 형태학적 후처리, 인스턴스 연결요소 생성 및 GIS 벡터 출력을 독립 CLI로 제공한다.
+항공 RGB GeoTIFF에서 논과 밭을 분할하는 PyTorch 파이프라인이다. 기본 모델은 ImageNet/ADE20K 사전학습 B2 encoder를 사용하는 SegFormer이며 U-Net도 선택할 수 있다. 데이터 검증, 통계/타일 전처리, 학습, 검증, 테스트, sliding-window 추론, 형태학적 후처리, 인스턴스 연결요소 생성 및 GIS 벡터 출력을 독립 CLI로 제공한다.
 
 ## 확인된 데이터 계약
 
@@ -103,7 +103,7 @@ python -m src.prepare_data --config configs/default.yaml \
 
 ## 학습
 
-기본 `configs/model.yaml`은 `model.name=segformer`, `checkpoint=nvidia/mit-b2`다. 첫 실행에는 Hugging Face Hub에서 가중치를 내려받으며 이후 로컬 캐시를 사용한다. 폐쇄망에서는 미리 캐시한 뒤 `model.local_files_only=true`를 설정한다. SegFormer의 저해상도 logits는 JSON raster mask와 정확히 맞도록 모델 어댑터에서 입력 크기로 복원된다.
+기본 `configs/model.yaml`은 `model.name=segformer`, `checkpoint=nvidia/segformer-b2-finetuned-ade-512-512`다. PyTorch 2.5에서도 원격 pickle을 읽지 않도록 공식 Safetensors 변환 커밋을 고정하고 `use_safetensors=true`를 강제한다. ADE20K의 150클래스 head는 폐기하고 배경/논/밭 3클래스 head를 새로 초기화한다. 첫 실행에는 Hugging Face Hub에서 가중치를 내려받으며 이후 로컬 캐시를 사용한다. 폐쇄망에서는 미리 캐시한 뒤 `model.local_files_only=true`를 설정한다. SegFormer의 저해상도 logits는 JSON raster mask와 정확히 맞도록 모델 어댑터에서 입력 크기로 복원된다.
 
 CPU 또는 단일 GPU:
 
@@ -237,4 +237,5 @@ python -m unittest discover -v
 - CUDA OOM: batch size 또는 tile size를 줄이고 gradient accumulation을 늘린다.
 - `gloo ... Connection closed by peer`: 다른 rank가 먼저 실패한 후속 오류다. 현재 코드는 rank0 원본 traceback을 기록하며, CUDA가 보이지 않는 CPU DDP는 시작 전에 차단한다. 컨테이너 GPU 연결과 CUDA PyTorch 설치를 먼저 확인한다.
 - `ModuleNotFoundError: tqdm`: 최신 코드에서는 진행 막대만 자동 비활성화된다. 기존 코드라면 `python -m pip install tqdm`을 실행한다.
+- `torch.load ... require ... torch 2.6`: 이전 `nvidia/mit-b2` pickle checkpoint를 읽을 때 발생한다. 최신 `configs/model.yaml`의 Safetensors B2 checkpoint/revision을 사용한다. PyTorch를 낮추거나 Transformers의 보안 검사를 우회하지 않는다.
 - 체크포인트 구조 불일치: checkpoint의 model/dataset 설정과 현재 resolved config를 비교한다.

@@ -43,7 +43,9 @@ class ModelLossMetricTests(unittest.TestCase):
                 "name": "segformer",
                 "input_channels": 3,
                 "num_classes": 3,
-                "checkpoint": "nvidia/mit-b2",
+                "checkpoint": "nvidia/segformer-b2-finetuned-ade-512-512",
+                "revision": "safe-revision",
+                "use_safetensors": True,
                 "pretrained": True,
             },
             "dataset": {
@@ -56,13 +58,15 @@ class ModelLossMetricTests(unittest.TestCase):
         model = build_model(config)
         self.assertIsInstance(model, SegFormerAdapter)
         loader.assert_called_once_with(
-            checkpoint="nvidia/mit-b2",
+            checkpoint="nvidia/segformer-b2-finetuned-ade-512-512",
+            revision="safe-revision",
             input_channels=3,
             num_classes=3,
             class_names=["배경", "논", "밭"],
             ignore_index=255,
             pretrained=True,
             local_files_only=False,
+            use_safetensors=True,
         )
 
     def test_composite_loss_is_finite(self) -> None:

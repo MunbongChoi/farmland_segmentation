@@ -2,7 +2,10 @@ model:
   name: segformer
   input_channels: 3
   num_classes: 3
-  checkpoint: nvidia/mit-b2
+  checkpoint: nvidia/segformer-b2-finetuned-ade-512-512
+  # Official Safetensors conversion commit; avoids unsafe torch.load on torch 2.5.
+  revision: 4585665b1bf59b90b831d5145d3e25d6e0743d03
+  use_safetensors: true
   pretrained: true
   local_files_only: false
   gradient_checkpointing: false

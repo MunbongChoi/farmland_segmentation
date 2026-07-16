@@ -106,12 +106,14 @@ class SegFormerAdapter(nn.Module):
 
 def _load_segformer_model(
     checkpoint: str,
+    revision: str | None,
     input_channels: int,
     num_classes: int,
     class_names: list[str],
     ignore_index: int,
     pretrained: bool,
     local_files_only: bool,
+    use_safetensors: bool,
 ) -> nn.Module:
     """Load a SegFormer backbone/config while keeping Transformers optional."""
     try:
@@ -129,21 +131,24 @@ def _load_segformer_model(
 
     id2label = {index: name for index, name in enumerate(class_names)}
     label2id = {name: index for index, name in id2label.items()}
-    common = {
-        "num_labels": num_classes,
-        "id2label": id2label,
-        "label2id": label2id,
-        "semantic_loss_ignore_index": ignore_index,
-    }
+    source_options = {"revision": revision, "local_files_only": local_files_only}
     try:
+        # Load and then mutate the config explicitly. Passing num_labels next to
+        # an ImageNet/ADE id2label map makes Transformers emit a false mismatch
+        # warning before it applies the new three-class label contract.
+        hf_config = SegformerConfig.from_pretrained(checkpoint, **source_options)
+        hf_config.num_labels = num_classes
+        hf_config.id2label = id2label
+        hf_config.label2id = label2id
+        hf_config.semantic_loss_ignore_index = ignore_index
         if pretrained:
             return SegformerForSemanticSegmentation.from_pretrained(
                 checkpoint,
+                config=hf_config,
                 ignore_mismatched_sizes=True,
-                local_files_only=local_files_only,
-                **common,
+                use_safetensors=use_safetensors,
+                **source_options,
             )
-        hf_config = SegformerConfig.from_pretrained(checkpoint, local_files_only=local_files_only, **common)
         hf_config.num_channels = input_channels
         return SegformerForSemanticSegmentation(hf_config)
     except (OSError, ValueError) as error:
@@ -173,13 +178,15 @@ def build_model(config: dict[str, Any]) -> nn.Module:
         )
     if name == "segformer":
         model = _load_segformer_model(
-            checkpoint=str(model_config.get("checkpoint", "nvidia/mit-b2")),
+            checkpoint=str(model_config.get("checkpoint", "nvidia/segformer-b2-finetuned-ade-512-512")),
+            revision=str(model_config["revision"]) if model_config.get("revision") else None,
             input_channels=input_channels,
             num_classes=num_classes,
             class_names=list(dataset_config.get("class_names", [str(index) for index in range(num_classes)])),
             ignore_index=int(dataset_config.get("ignore_index", 255)),
             pretrained=bool(model_config.get("pretrained", True)),
             local_files_only=bool(model_config.get("local_files_only", False)),
+            use_safetensors=bool(model_config.get("use_safetensors", True)),
         )
         if bool(model_config.get("gradient_checkpointing", False)):
             model.gradient_checkpointing_enable()

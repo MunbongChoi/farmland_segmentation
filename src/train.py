@@ -67,6 +67,12 @@ def setup_distributed(allow_cpu_ddp: bool = False) -> tuple[int, int, int]:
     return rank, world_size, local_rank
 
 
+def cleanup_distributed() -> None:
+    """Destroy an initialized process group on both success and failure."""
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
+
+
 def select_device(local_rank: int) -> torch.device:
     """Select a CUDA process-local device or CPU fallback."""
     if torch.cuda.is_available():
@@ -263,9 +269,8 @@ def main() -> None:
             writer.close()
         if wandb_run:
             wandb_run.finish()
-    if world_size > 1:
-        torch.distributed.destroy_process_group()
-
-
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        cleanup_distributed()
