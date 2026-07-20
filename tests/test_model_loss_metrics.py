@@ -16,6 +16,7 @@ class DummySegFormer(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.head = nn.Conv2d(3, 3, kernel_size=1, stride=4)
+        self.decode_head = SimpleNamespace(classifier=self.head)
 
     def forward(self, pixel_values: torch.Tensor) -> SimpleNamespace:
         return SimpleNamespace(logits=self.head(pixel_values))
@@ -34,6 +35,12 @@ class ModelLossMetricTests(unittest.TestCase):
         with torch.inference_mode():
             output = model(torch.randn(2, 3, 65, 67))
         self.assertEqual(tuple(output.shape), (2, 3, 65, 67))
+
+    def test_segformer_classifier_gradient_matches_parameter_stride(self) -> None:
+        backbone = DummySegFormer()
+        model = SegFormerAdapter(backbone)
+        model(torch.randn(2, 3, 32, 32)).mean().backward()
+        self.assertEqual(backbone.head.weight.grad.stride(), backbone.head.weight.stride())
 
     @patch("src.model._load_segformer_model")
     def test_build_model_selects_segformer(self, loader: Mock) -> None:

@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import warnings
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import rasterio
@@ -12,11 +13,34 @@ from rasterio.errors import NotGeoreferencedWarning
 from rasterio.transform import from_origin
 
 from src.infer import write_raster
-from src.infer_visualize import load_visualization_arrays
+from src.datasets.dataset import RasterPair
+from src.infer_visualize import load_visualization_arrays, select_sample_pairs
 from src.utils.visualization import blend_mask, save_inference_visualizations
 
 
 class InferenceVisualizationTests(unittest.TestCase):
+    @patch("src.infer_visualize.discover_pairs")
+    def test_batch_selection_is_reproducible_and_limited(self, discover) -> None:
+        discover.return_value = [
+            RasterPair(Path(f"image_{index}.tif"), Path(f"label_{index}.json"), Path(f"meta_{index}.json"))
+            for index in range(20)
+        ]
+        config = {
+            "project": {"seed": 42},
+            "dataset": {
+                "root_dir": "data",
+                "validation": {"index_cache": "cache.json"},
+                "validation_test_fraction": 0.0,
+                "raw_class_map": {50: 1, 60: 2},
+                "target_property": "ANN_CD",
+            },
+        }
+        first = select_sample_pairs(config, "validation", 10)
+        second = select_sample_pairs(config, "validation", 10)
+        self.assertEqual(first, second)
+        self.assertEqual(len(first), 10)
+        self.assertEqual(len({pair.image for pair in first}), 10)
+
     def test_overlay_preserves_background_pixels(self) -> None:
         image = np.full((8, 9, 3), 100, dtype=np.uint8)
         mask = np.zeros((8, 9), dtype=np.uint8)

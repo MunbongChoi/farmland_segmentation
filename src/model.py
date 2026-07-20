@@ -96,12 +96,25 @@ class SegFormerAdapter(nn.Module):
     def __init__(self, model: nn.Module) -> None:
         super().__init__()
         self.model = model
+        # Conv2d(768, 3, 1) may produce a logically contiguous gradient whose
+        # singleton-dimension strides differ from the parameter. DDP then warns
+        # and copies it into the reduction bucket. Normalize only this tiny
+        # classifier gradient before DDP's reducer hook observes it.
+        decode_head = getattr(model, "decode_head", None)
+        classifier = getattr(decode_head, "classifier", None)
+        if isinstance(classifier, nn.Conv2d) and classifier.weight.requires_grad:
+            classifier.weight.register_hook(_contiguous_gradient)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         logits = self.model(pixel_values=inputs).logits
         if logits.shape[-2:] != inputs.shape[-2:]:
             logits = F.interpolate(logits, size=inputs.shape[-2:], mode="bilinear", align_corners=False)
         return logits
+
+
+def _contiguous_gradient(gradient: torch.Tensor) -> torch.Tensor:
+    """Return a fresh standard-stride gradient for DDP bucket compatibility."""
+    return gradient.clone(memory_format=torch.contiguous_format)
 
 
 def _load_segformer_model(

@@ -201,6 +201,19 @@ def write_raster(path: str | Path, array: np.ndarray, crs: CRS, transform_value:
         output.write(values.astype(dtype, copy=False))
 
 
+def load_inference_model(
+    config: dict[str, Any],
+    checkpoint: str,
+    device: torch.device | None = None,
+) -> tuple[torch.nn.Module, torch.device]:
+    """Load one checkpoint for reuse across one or many inference rasters."""
+    selected_device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = build_model(config).to(selected_device)
+    load_checkpoint(checkpoint, model, current_config=config, map_location=selected_device)
+    model.eval()
+    return model, selected_device
+
+
 def run_inference(
     config: dict[str, Any],
     checkpoint: str,
@@ -208,12 +221,18 @@ def run_inference(
     output_mask: str,
     reference_meta: str | None = None,
     output_vector: str | None = None,
+    model: torch.nn.Module | None = None,
+    device: torch.device | None = None,
 ) -> None:
     """Run streaming-tile inference using existing Meta JSON georeferencing."""
     logger = logging.getLogger("infer")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = build_model(config).to(device)
-    load_checkpoint(checkpoint, model, current_config=config, map_location=device)
+    if model is None:
+        model, device = load_inference_model(config, checkpoint, device)
+    elif device is None:
+        try:
+            device = next(model.parameters()).device
+        except StopIteration:
+            device = torch.device("cpu")
     model.eval()
     dataset, inference = config["dataset"], config["inference"]
     channels = tuple(int(value) for value in dataset["channel_indices"])

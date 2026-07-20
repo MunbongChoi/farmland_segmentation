@@ -200,6 +200,20 @@ PNG 출력:
 - `*_prob_1_paddy.png`, `*_prob_2_field.png`: 클래스별 확률
 - `*_panel.png`: RGB, mask, overlay, confidence 2×2 비교
 
+Validation에서 논·밭 JSON이 실제로 존재하는 샘플 10장을 seed 42로 재현 가능하게 선택해 일괄 추론하려면 다음을 실행한다. 모델 checkpoint는 한 번만 GPU에 로드해 모든 샘플에 재사용한다.
+
+```bash
+python -m src.infer_visualize \
+  --config configs/default.yaml \
+  --checkpoint outputs/segformer_b2/checkpoints/best.pt \
+  --split validation \
+  --sample-count 10 \
+  --output-dir outputs/segformer_b2/predictions/validation_10 \
+  --batch-size 8
+```
+
+각 샘플은 `01_<영상명>/`부터 별도 폴더에 저장되며, 선택된 원본·JSON·Meta·panel 경로는 `samples.csv`에 기록된다. 해당 split에 유효 샘플이 10개보다 적으면 가능한 샘플만 처리한다.
+
 ## Loss 선택
 
 기본은 CE + Dice + 작은 boundary loss다. CE는 안정적인 다중 클래스 기준, Dice는 논/밭 픽셀 불균형 보완, boundary는 필지 경계 민감도를 높인다. Focal은 어려운 픽셀에 집중하지만 노이즈에 과민할 수 있고, Tversky는 FP/FN 비용을 조절하지만 alpha/beta 튜닝이 필요하다. 모든 조합은 `configs/model.yaml`의 weight로 켜고 끈다.
@@ -238,4 +252,5 @@ python -m unittest discover -v
 - `gloo ... Connection closed by peer`: 다른 rank가 먼저 실패한 후속 오류다. 현재 코드는 rank0 원본 traceback을 기록하며, CUDA가 보이지 않는 CPU DDP는 시작 전에 차단한다. 컨테이너 GPU 연결과 CUDA PyTorch 설치를 먼저 확인한다.
 - `ModuleNotFoundError: tqdm`: 최신 코드에서는 진행 막대만 자동 비활성화된다. 기존 코드라면 `python -m pip install tqdm`을 실행한다.
 - `torch.load ... require ... torch 2.6`: 이전 `nvidia/mit-b2` pickle checkpoint를 읽을 때 발생한다. 최신 `configs/model.yaml`의 Safetensors B2 checkpoint/revision을 사용한다. PyTorch를 낮추거나 Transformers의 보안 검사를 우회하지 않는다.
+- `Grad strides do not match bucket view strides`: SegFormer의 마지막 1×1 classifier가 만드는 singleton stride와 DDP bucket layout 차이다. 최신 모델 어댑터는 classifier gradient를 표준 contiguous stride로 정규화한다.
 - 체크포인트 구조 불일치: checkpoint의 model/dataset 설정과 현재 resolved config를 비교한다.
