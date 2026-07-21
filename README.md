@@ -103,13 +103,13 @@ python -m src.prepare_data --config configs/default.yaml \
 
 ## 학습
 
-기본 `configs/model.yaml`은 `model.name=segformer`, `checkpoint=tf_model.h5`, `h5_architecture=b4`다. 이 파일은 TensorFlow/Keras 형식의 Hugging Face SegFormer-B4 ADE20K 가중치이며, `h5py`로 직접 읽어 dense kernel은 전치하고 convolution kernel은 PyTorch 배열 순서로 변환한다. H5 encoder의 stage 깊이 `[3, 8, 27, 3]`도 자동 검증한다. TensorFlow 런타임은 필요하지 않다. H5의 ADE20K 150클래스 head는 현재 데이터셋 클래스 수와 다르므로 폐기하고 농경지 head를 새로 초기화한다. 따라서 `tf_model.h5`는 학습 초기 가중치이며, 실제 추론에는 학습 후 생성되는 `best.pt`를 사용한다. SegFormer의 저해상도 logits는 JSON raster mask와 정확히 맞도록 모델 어댑터에서 입력 크기로 복원된다.
+기본 `configs/model.yaml`은 `model.name=segformer`, `checkpoint=b4.h5`, `h5_architecture=b4`다. 이 파일은 TensorFlow/Keras 형식의 Hugging Face SegFormer-B4 ADE20K 가중치이며, `h5py`로 직접 읽어 dense kernel은 전치하고 convolution kernel은 PyTorch 배열 순서로 변환한다. H5 encoder의 stage 깊이 `[3, 8, 27, 3]`도 자동 검증한다. TensorFlow 런타임은 필요하지 않다. H5의 ADE20K 150클래스 head는 현재 데이터셋 클래스 수와 다르므로 폐기하고 농경지 head를 새로 초기화한다. 따라서 `b4.h5`는 학습 초기 가중치이며, 실제 추론에는 학습 후 생성되는 `best.pt`를 사용한다. SegFormer의 저해상도 logits는 JSON raster mask와 정확히 맞도록 모델 어댑터에서 입력 크기로 복원된다.
 
 H5 파일을 다른 위치에 둔 경우 다음처럼 지정한다.
 
 ```bash
 python -m src.train --config configs/default.yaml \
-  --set model.checkpoint=/data/models/tf_model.h5
+  --set model.checkpoint=/data/models/b4.h5
 ```
 
 CPU 또는 단일 GPU:
@@ -249,7 +249,7 @@ python -m src.infer_visualize \
 
 기본은 CE + Dice + 작은 boundary loss다. CE는 안정적인 다중 클래스 기준, Dice는 논/밭 픽셀 불균형 보완, boundary는 필지 경계 민감도를 높인다. Focal은 어려운 픽셀에 집중하지만 노이즈에 과민할 수 있고, Tversky는 FP/FN 비용을 조절하지만 alpha/beta 튜닝이 필요하다. 모든 조합은 `configs/model.yaml`의 weight로 켜고 끈다.
 
-TensorBoard는 기본 활성화된다. `logging.wandb: true`로 바꾸고 로그인하면 동일한 epoch 지표를 W&B에도 기록한다.
+학습 지표는 `outputs/segformer_b4/logs/history.csv`와 `latest_metrics.json`에 기록된다. `logging.wandb: true`로 바꾸고 로그인하면 동일한 epoch 지표를 W&B에도 기록한다.
 
 ## Docker
 
@@ -282,6 +282,6 @@ python -m unittest discover -v
 - CUDA OOM: batch size 또는 tile size를 줄이고 gradient accumulation을 늘린다.
 - `gloo ... Connection closed by peer`: 다른 rank가 먼저 실패한 후속 오류다. 현재 코드는 rank0 원본 traceback을 기록하며, CUDA가 보이지 않는 CPU DDP는 시작 전에 차단한다. 컨테이너 GPU 연결과 CUDA PyTorch 설치를 먼저 확인한다.
 - `ModuleNotFoundError: tqdm`: 최신 코드에서는 진행 막대만 자동 비활성화된다. 기존 코드라면 `python -m pip install tqdm`을 실행한다.
-- H5 구조 불일치: `tf_model.h5`의 encoder 깊이가 B4 `[3,8,27,3]`인지 확인한다. 설정은 `model.h5_architecture=b4`여야 한다.
+- H5 구조 불일치: `b4.h5`의 encoder 깊이가 B4 `[3,8,27,3]`인지 확인한다. 설정은 `model.h5_architecture=b4`여야 한다.
 - `Grad strides do not match bucket view strides`: SegFormer의 마지막 1×1 classifier가 만드는 singleton stride와 DDP bucket layout 차이다. 최신 모델 어댑터는 classifier gradient를 표준 contiguous stride로 정규화한다.
 - 체크포인트 구조 불일치: checkpoint의 model/dataset 설정과 현재 resolved config를 비교한다.

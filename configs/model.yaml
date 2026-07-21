@@ -3,7 +3,7 @@ model:
   input_channels: 3
   num_classes: 3
   # TensorFlow/Keras SegFormer-B4 ADE20K weights. The 150-class head is replaced.
-  checkpoint: tf_model.h5
+  checkpoint: b4.h5
   h5_architecture: b4
   revision: null
   use_safetensors: true

@@ -6,7 +6,6 @@ scipy>=1.12,<2
 shapely>=2.0,<3
 geopandas>=0.14,<2
 pyogrio>=0.7,<1
-tensorboard>=2.16,<3
 transformers>=4.46,<6
 safetensors>=0.4,<1
 h5py>=3.10,<4

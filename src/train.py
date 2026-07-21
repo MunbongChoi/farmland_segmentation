@@ -204,15 +204,7 @@ def main() -> None:
         start_epoch = int(checkpoint["epoch"]) + 1
         best_metric = float(checkpoint["best_metric"])
         logger.info("학습 재개: epoch=%d best=%.6f", start_epoch, best_metric)
-    writer = None
     wandb_run = None
-    if rank == 0 and config.get("logging", {}).get("tensorboard", True):
-        try:
-            from torch.utils.tensorboard import SummaryWriter
-
-            writer = SummaryWriter(output / "logs" / "tensorboard")
-        except ImportError:
-            logger.warning("tensorboard가 설치되지 않아 비활성화합니다.")
     if rank == 0 and config.get("logging", {}).get("wandb", False):
         try:
             import wandb
@@ -244,10 +236,6 @@ def main() -> None:
             logger.info("epoch=%d train=%.5f val=%.5f mIoU(fg)=%.5f time=%.1fs gpu=%.0fMB", epoch, train_loss, validation["loss"], validation["mean_iou_no_background"], elapsed, gpu_memory)
             append_history(output / "logs" / "history.csv", row)
             (output / "logs" / "latest_metrics.json").write_text(json.dumps(validation, ensure_ascii=False, indent=2), encoding="utf-8")
-            if writer:
-                for key, value in row.items():
-                    if key != "epoch":
-                        writer.add_scalar(key, value, epoch)
             if wandb_run:
                 wandb_run.log(row, step=epoch)
             save_checkpoint(output / "checkpoints" / "last.pt", model, optimizer, scheduler, scaler, epoch, max(best_metric, metric), config)
@@ -265,8 +253,6 @@ def main() -> None:
             break
     if rank == 0:
         logger.info("학습 완료: %.1f초, best=%.6f", time.perf_counter() - training_started, best_metric)
-        if writer:
-            writer.close()
         if wandb_run:
             wandb_run.finish()
 if __name__ == "__main__":

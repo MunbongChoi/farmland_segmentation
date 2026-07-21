@@ -15,7 +15,6 @@ dependencies:
   - shapely>=2
   - geopandas>=0.14
   - pyogrio>=0.7
-  - tensorboard>=2.16
   - transformers>=4.46,<6
   - safetensors>=0.4
   - h5py>=3.10
