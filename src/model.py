@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
 from typing import Any
 
 import torch
 from torch import nn
 from torch.nn import functional as F
+
+from .utils.tf_checkpoint import detect_tf_segformer_depths, load_tf_segformer_h5
 
 
 class DoubleConv(nn.Module):
@@ -127,6 +131,7 @@ def _load_segformer_model(
     pretrained: bool,
     local_files_only: bool,
     use_safetensors: bool,
+    h5_architecture: str,
 ) -> nn.Module:
     """Load a SegFormer backbone/config while keeping Transformers optional."""
     try:
@@ -146,6 +151,54 @@ def _load_segformer_model(
     label2id = {name: index for index, name in id2label.items()}
     source_options = {"revision": revision, "local_files_only": local_files_only}
     try:
+        checkpoint_path = Path(checkpoint).expanduser()
+        if checkpoint_path.suffix.lower() in {".h5", ".hdf5"}:
+            if not pretrained:
+                raise ValueError("H5 checkpoint를 지정할 때는 model.pretrained=true여야 합니다.")
+            architecture = h5_architecture.lower().replace("-", "")
+            architecture_depths = {"b2": (3, 4, 6, 3), "b4": (3, 8, 27, 3)}
+            if architecture not in architecture_depths:
+                raise ValueError(f"지원하지 않는 TensorFlow SegFormer 구조입니다: {h5_architecture}")
+            detected_depths = detect_tf_segformer_depths(checkpoint_path)
+            expected_depths = architecture_depths[architecture]
+            if detected_depths != expected_depths:
+                raise ValueError(
+                    f"H5 구조와 model.h5_architecture가 다릅니다: detected_depths={detected_depths}, "
+                    f"configured={architecture}({expected_depths})"
+                )
+            hf_config = SegformerConfig(
+                num_channels=input_channels,
+                num_encoder_blocks=4,
+                depths=list(expected_depths),
+                sr_ratios=[8, 4, 2, 1],
+                hidden_sizes=[64, 128, 320, 512],
+                patch_sizes=[7, 3, 3, 3],
+                strides=[4, 2, 2, 2],
+                num_attention_heads=[1, 2, 5, 8],
+                mlp_ratios=[4, 4, 4, 4],
+                hidden_act="gelu",
+                hidden_dropout_prob=0.0,
+                attention_probs_dropout_prob=0.0,
+                classifier_dropout_prob=0.1,
+                drop_path_rate=0.1,
+                layer_norm_eps=1e-6,
+                decoder_hidden_size=768,
+                reshape_last_stage=True,
+                num_labels=num_classes,
+                id2label=id2label,
+                label2id=label2id,
+                semantic_loss_ignore_index=ignore_index,
+            )
+            model = SegformerForSemanticSegmentation(hf_config)
+            report = load_tf_segformer_h5(model, checkpoint_path)
+            logging.getLogger(__name__).info(
+                "TensorFlow SegFormer H5 로드: path=%s loaded=%d skipped_classifier=%d",
+                checkpoint_path,
+                len(report.loaded),
+                len(report.skipped_classifier),
+            )
+            return model
+
         # Load and then mutate the config explicitly. Passing num_labels next to
         # an ImageNet/ADE id2label map makes Transformers emit a false mismatch
         # warning before it applies the new three-class label contract.
@@ -191,7 +244,7 @@ def build_model(config: dict[str, Any]) -> nn.Module:
         )
     if name == "segformer":
         model = _load_segformer_model(
-            checkpoint=str(model_config.get("checkpoint", "nvidia/segformer-b2-finetuned-ade-512-512")),
+            checkpoint=str(model_config.get("checkpoint", "nvidia/segformer-b4-finetuned-ade-512-512")),
             revision=str(model_config["revision"]) if model_config.get("revision") else None,
             input_channels=input_channels,
             num_classes=num_classes,
@@ -200,6 +253,7 @@ def build_model(config: dict[str, Any]) -> nn.Module:
             pretrained=bool(model_config.get("pretrained", True)),
             local_files_only=bool(model_config.get("local_files_only", False)),
             use_safetensors=bool(model_config.get("use_safetensors", True)),
+            h5_architecture=str(model_config.get("h5_architecture", "b4")),
         )
         if bool(model_config.get("gradient_checkpointing", False)):
             model.gradient_checkpointing_enable()

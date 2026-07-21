@@ -19,6 +19,7 @@ from scipy import ndimage
 
 from .datasets.dataset import load_spatial_metadata
 from .model import build_model
+from .resolution import open_resampled_vrt
 from .utils.checkpoint import load_checkpoint
 from .utils.config import apply_overrides, load_config
 from .utils.logger import setup_logger
@@ -249,10 +250,56 @@ def run_inference(
         if bool(inference.get("require_georeference", True)) and (crs is None or transform_value.is_identity):
             raise ValueError("입력 GeoTIFF에 CRS/Transform이 없습니다. 기존 대응 _META.json을 --reference-meta로 지정하세요.")
 
-        def reader(row: int, col: int) -> np.ndarray:
-            return source.read(channels, window=Window(col, row, int(inference["tile_size"]), int(inference["tile_size"])), boundless=True, fill_value=0)
+        if crs is None:
+            raise ValueError("25cm 해상도 변환에는 입력 CRS가 필요합니다.")
+        target_resolution_m = inference.get("target_resolution_m")
+        if target_resolution_m is not None:
+            inference_source, grid = open_resampled_vrt(
+                source,
+                crs,
+                transform_value,
+                float(target_resolution_m),
+                inference.get("target_crs"),
+                str(inference.get("resampling", "bilinear")),
+            )
+            crs, transform_value = grid.crs, grid.transform
+            logger.info(
+                "추론 격자 변환: source=%dx%d target=%dx%d resolution=%.3fm crs=%s",
+                source.width,
+                source.height,
+                grid.width,
+                grid.height,
+                float(target_resolution_m),
+                grid.crs,
+            )
+        else:
+            inference_source = source
 
-        probabilities = sliding_window_predict(reader, source.height, source.width, model, device, int(dataset["num_classes"]), int(inference["tile_size"]), int(inference["overlap"]), int(inference["batch_size"]), list(dataset["mean"]), list(dataset["std"]), str(inference.get("merge", "hann")), bool(inference.get("auto_reduce_batch", True)))
+        try:
+            max_pixels = int(inference.get("max_resampled_pixels", 0))
+            output_pixels = inference_source.width * inference_source.height
+            if max_pixels > 0 and output_pixels > max_pixels:
+                raise ValueError(
+                    f"25cm 변환 결과가 너무 큽니다: {inference_source.width}x{inference_source.height}="
+                    f"{output_pixels:,} pixels > max_resampled_pixels={max_pixels:,}. "
+                    "입력을 공간 타일로 나누거나 inference.max_resampled_pixels를 조정하세요."
+                )
+
+            def reader(row: int, col: int) -> np.ndarray:
+                tile_size = int(inference["tile_size"])
+                window_width = min(tile_size, inference_source.width - col)
+                window_height = min(tile_size, inference_source.height - row)
+                crop = inference_source.read(channels, window=Window(col, row, window_width, window_height))
+                if (window_height, window_width) == (tile_size, tile_size):
+                    return crop
+                tile = np.zeros((len(channels), tile_size, tile_size), dtype=crop.dtype)
+                tile[:, :window_height, :window_width] = crop
+                return tile
+
+            probabilities = sliding_window_predict(reader, inference_source.height, inference_source.width, model, device, int(dataset["num_classes"]), int(inference["tile_size"]), int(inference["overlap"]), int(inference["batch_size"]), list(dataset["mean"]), list(dataset["std"]), str(inference.get("merge", "hann")), bool(inference.get("auto_reduce_batch", True)))
+        finally:
+            if inference_source is not source:
+                inference_source.close()
     if crs is None:
         raise ValueError("출력 공간정보가 없습니다.")
     raw_mask = probabilities.argmax(0).astype(np.uint8)
@@ -295,6 +342,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tile-size", type=int)
     parser.add_argument("--overlap", type=int)
     parser.add_argument("--batch-size", type=int)
+    parser.add_argument("--target-resolution-m", type=float, help="추론 격자의 지상 해상도(m/pixel), 예: 0.25")
+    parser.add_argument("--target-crs", help="목표 투영 CRS, 예: EPSG:5179. 경위도 입력에는 필수")
+    parser.add_argument("--resampling", choices=("nearest", "bilinear", "cubic", "lanczos"))
     parser.add_argument("--set", action="append", default=[])
     return parser.parse_args()
 
@@ -302,7 +352,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     config = apply_overrides(load_config(args.config), args.set)
-    for key, value in (("tile_size", args.tile_size), ("overlap", args.overlap), ("batch_size", args.batch_size)):
+    for key, value in (("tile_size", args.tile_size), ("overlap", args.overlap), ("batch_size", args.batch_size), ("target_resolution_m", args.target_resolution_m), ("target_crs", args.target_crs), ("resampling", args.resampling)):
         if value is not None:
             config["inference"][key] = value
     setup_logger("infer", Path(config["project"]["output_dir"]) / "logs" / "infer.log")

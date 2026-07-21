@@ -12,8 +12,10 @@ from typing import Any
 
 import numpy as np
 import rasterio
+from rasterio.enums import Resampling
 from rasterio.errors import NotGeoreferencedWarning
 from rasterio.transform import Affine
+from rasterio.vrt import WarpedVRT
 
 from .datasets.dataset import RasterPair, deterministic_partition, discover_pairs, load_spatial_metadata
 from .infer import load_inference_model, run_inference
@@ -33,7 +35,7 @@ def load_visualization_arrays(
     channel_indices: list[int],
     reference_meta: str | Path | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Read and validate source, semantic mask, probability, and spatial grids."""
+    """Read arrays, aligning source RGB to the inference grid when needed."""
     channels = tuple(int(value) for value in channel_indices[:3])
     if len(channels) != 3:
         raise ValueError("RGB 시각화를 위해 dataset.channel_indices에 3개 밴드가 필요합니다.")
@@ -50,25 +52,36 @@ def load_visualization_arrays(
         mask = mask_source.read(1)
         if mask_source.crs is None or mask_source.transform.is_identity:
             raise ValueError("추론 mask에 유효한 CRS/Transform이 없습니다.")
-        mask_crs, mask_transform = mask_source.crs, mask_source.transform
-        if mask_source.shape != source_shape:
-            raise ValueError("원본 영상과 추론 mask 크기가 다릅니다.")
+        mask_crs, mask_transform, mask_shape = mask_source.crs, mask_source.transform, mask_source.shape
 
     if reference_meta:
         metadata = load_spatial_metadata(reference_meta)
         if (metadata.height, metadata.width) != source_shape:
             raise ValueError("reference Meta JSON과 원본 영상 크기가 다릅니다.")
-        if metadata.crs != mask_crs or not _same_transform(metadata.transform, mask_transform):
-            raise ValueError("reference Meta JSON과 추론 mask의 CRS/Transform이 다릅니다.")
+        source_grid_crs, source_grid_transform = metadata.crs, metadata.transform
     elif source_crs is not None and not source_transform.is_identity:
-        if source_crs != mask_crs or not _same_transform(source_transform, mask_transform):
-            raise ValueError("원본 GeoTIFF와 추론 mask의 CRS/Transform이 다릅니다.")
+        source_grid_crs, source_grid_transform = source_crs, source_transform
     else:
         raise ValueError("원본 영상에 공간정보가 없습니다. 대응하는 --reference-meta를 지정하세요.")
 
+    same_grid = source_shape == mask_shape and source_grid_crs == mask_crs and _same_transform(source_grid_transform, mask_transform)
+    if not same_grid:
+        with rasterio.open(input_path) as source:
+            with WarpedVRT(
+                source,
+                src_crs=source_grid_crs,
+                src_transform=source_grid_transform,
+                crs=mask_crs,
+                transform=mask_transform,
+                width=mask_shape[1],
+                height=mask_shape[0],
+                resampling=Resampling.bilinear,
+            ) as aligned_source:
+                image = aligned_source.read(channels)
+
     with rasterio.open(probability_path) as probability_source:
-        if probability_source.shape != source_shape:
-            raise ValueError("확률 raster와 원본 영상 크기가 다릅니다.")
+        if probability_source.shape != mask_shape:
+            raise ValueError("확률 raster와 추론 mask의 크기가 다릅니다.")
         if probability_source.crs != mask_crs or not _same_transform(probability_source.transform, mask_transform):
             raise ValueError("확률 raster와 추론 mask의 CRS/Transform이 다릅니다.")
         probabilities = probability_source.read()
@@ -154,6 +167,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tile-size", type=int)
     parser.add_argument("--overlap", type=int)
     parser.add_argument("--batch-size", type=int)
+    parser.add_argument("--target-resolution-m", type=float, help="추론 격자의 지상 해상도(m/pixel), 예: 0.25")
+    parser.add_argument("--target-crs", help="목표 투영 CRS, 예: EPSG:5179. 경위도 입력에는 필수")
+    parser.add_argument("--resampling", choices=("nearest", "bilinear", "cubic", "lanczos"))
     parser.add_argument("--set", action="append", default=[])
     return parser.parse_args()
 
@@ -161,7 +177,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     config = apply_overrides(load_config(args.config), args.set)
-    for key, value in (("tile_size", args.tile_size), ("overlap", args.overlap), ("batch_size", args.batch_size)):
+    for key, value in (("tile_size", args.tile_size), ("overlap", args.overlap), ("batch_size", args.batch_size), ("target_resolution_m", args.target_resolution_m), ("target_crs", args.target_crs), ("resampling", args.resampling)):
         if value is not None:
             config["inference"][key] = value
     config.setdefault("output", {})["save_probability_map"] = True

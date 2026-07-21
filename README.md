@@ -1,6 +1,6 @@
 # 논·밭 SegFormer/U-Net GeoTIFF Segmentation
 
-항공 RGB GeoTIFF에서 논과 밭을 분할하는 PyTorch 파이프라인이다. 기본 모델은 ImageNet/ADE20K 사전학습 B2 encoder를 사용하는 SegFormer이며 U-Net도 선택할 수 있다. 데이터 검증, 통계/타일 전처리, 학습, 검증, 테스트, sliding-window 추론, 형태학적 후처리, 인스턴스 연결요소 생성 및 GIS 벡터 출력을 독립 CLI로 제공한다.
+항공 RGB GeoTIFF에서 논과 밭을 분할하는 PyTorch 파이프라인이다. 기본 모델은 ImageNet/ADE20K 사전학습 B4 encoder를 사용하는 SegFormer이며 U-Net도 선택할 수 있다. 데이터 검증, 통계/타일 전처리, 학습, 검증, 테스트, sliding-window 추론, 형태학적 후처리, 인스턴스 연결요소 생성 및 GIS 벡터 출력을 독립 CLI로 제공한다.
 
 ## 확인된 데이터 계약
 
@@ -99,11 +99,18 @@ python -m src.prepare_data --config configs/default.yaml \
   --overlap 128 --max-background-fraction 0.95
 ```
 
-계산된 `outputs/segformer_b2/data_stats.json`의 mean/std를 `configs/dataset.yaml`에 반영한다.
+계산된 `outputs/segformer_b4/data_stats.json`의 mean/std를 `configs/dataset.yaml`에 반영한다.
 
 ## 학습
 
-기본 `configs/model.yaml`은 `model.name=segformer`, `checkpoint=nvidia/segformer-b2-finetuned-ade-512-512`다. PyTorch 2.5에서도 원격 pickle을 읽지 않도록 공식 Safetensors 변환 커밋을 고정하고 `use_safetensors=true`를 강제한다. ADE20K의 150클래스 head는 폐기하고 배경/논/밭 3클래스 head를 새로 초기화한다. 첫 실행에는 Hugging Face Hub에서 가중치를 내려받으며 이후 로컬 캐시를 사용한다. 폐쇄망에서는 미리 캐시한 뒤 `model.local_files_only=true`를 설정한다. SegFormer의 저해상도 logits는 JSON raster mask와 정확히 맞도록 모델 어댑터에서 입력 크기로 복원된다.
+기본 `configs/model.yaml`은 `model.name=segformer`, `checkpoint=tf_model.h5`, `h5_architecture=b4`다. 이 파일은 TensorFlow/Keras 형식의 Hugging Face SegFormer-B4 ADE20K 가중치이며, `h5py`로 직접 읽어 dense kernel은 전치하고 convolution kernel은 PyTorch 배열 순서로 변환한다. H5 encoder의 stage 깊이 `[3, 8, 27, 3]`도 자동 검증한다. TensorFlow 런타임은 필요하지 않다. H5의 ADE20K 150클래스 head는 현재 데이터셋 클래스 수와 다르므로 폐기하고 농경지 head를 새로 초기화한다. 따라서 `tf_model.h5`는 학습 초기 가중치이며, 실제 추론에는 학습 후 생성되는 `best.pt`를 사용한다. SegFormer의 저해상도 logits는 JSON raster mask와 정확히 맞도록 모델 어댑터에서 입력 크기로 복원된다.
+
+H5 파일을 다른 위치에 둔 경우 다음처럼 지정한다.
+
+```bash
+python -m src.train --config configs/default.yaml \
+  --set model.checkpoint=/data/models/tf_model.h5
+```
 
 CPU 또는 단일 GPU:
 
@@ -127,7 +134,7 @@ python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda
 
 ```bash
 python -m src.train --config configs/default.yaml \
-  --resume outputs/segformer_b2/checkpoints/last.pt \
+  --resume outputs/segformer_b4/checkpoints/last.pt \
   --set training.batch_size=4 \
   --set training.epochs=150
 ```
@@ -140,13 +147,13 @@ python -m src.train --config configs/default.yaml \
   --set model.pretrained=false
 ```
 
-`outputs/segformer_b2/checkpoints/best.pt`와 `last.pt`에는 모델, optimizer, scheduler, AMP scaler, epoch, best metric, 모델/데이터 설정, 클래스 목록, Git hash 및 UTC 저장시각이 포함된다. 기존 U-Net 체크포인트와 섞이지 않도록 SegFormer 출력 폴더를 분리한다.
+`outputs/segformer_b4/checkpoints/best.pt`와 `last.pt`에는 모델, optimizer, scheduler, AMP scaler, epoch, best metric, 모델/데이터 설정, 클래스 목록, Git hash 및 UTC 저장시각이 포함된다. 기존 U-Net 체크포인트와 섞이지 않도록 SegFormer 출력 폴더를 분리한다.
 
 ## 검증과 테스트
 
 ```bash
-python -m src.validate --config configs/default.yaml --checkpoint outputs/segformer_b2/checkpoints/best.pt
-python -m src.test --config configs/default.yaml --checkpoint outputs/segformer_b2/checkpoints/best.pt
+python -m src.validate --config configs/default.yaml --checkpoint outputs/segformer_b4/checkpoints/best.pt
+python -m src.test --config configs/default.yaml --checkpoint outputs/segformer_b4/checkpoints/best.pt
 ```
 
 JSON에는 전체 pixel accuracy와 배경을 제외한 `foreground_pixel_accuracy`, precision, recall, F1, Dice, 클래스 IoU, mean IoU, frequency-weighted IoU, confusion matrix가 저장된다. CSV에는 클래스별 지표가 저장되고 최저 IoU 클래스가 로그에 표시된다.
@@ -158,13 +165,37 @@ JSON에는 전체 pixel accuracy와 배경을 제외한 `foreground_pixel_accura
 ```bash
 python -m src.infer \
   --config configs/default.yaml \
-  --checkpoint outputs/segformer_b2/checkpoints/best.pt \
+  --checkpoint outputs/segformer_b4/checkpoints/best.pt \
   --input "../data/01.데이터/2.Validation/원천데이터/VS_항공사진_FGT_512픽셀/LC_GS_AP25_34801025_006_2019_FGT.tif" \
   --reference-meta "../data/01.데이터/2.Validation/라벨링데이터/항공사진_FGT_512픽셀_Meta/LC_GS_AP25_34801025_006_2019_FGT_META.json" \
-  --output-mask outputs/segformer_b2/predictions/sample.tif \
-  --output-vector outputs/segformer_b2/predictions/sample.gpkg \
+  --output-mask outputs/segformer_b4/predictions/sample.tif \
+  --output-vector outputs/segformer_b4/predictions/sample.gpkg \
   --tile-size 512 --overlap 128 --batch-size 8
 ```
+
+기본 설정은 입력 영상을 중간 파일 없이 `0.25 m/pixel` 가상 격자로 리샘플링한 뒤 추론한다. 원본이 EPSG:5186, EPSG:5179 같은 투영 CRS이면 원본 CRS를 유지한다. EPSG:4326처럼 각도 단위인 입력은 미터 단위 목표 CRS를 반드시 지정한다.
+
+```bash
+# 투영 CRS 영상: 원본 CRS를 유지하면서 25cm/pixel로 추론
+python -m src.infer \
+  --config configs/default.yaml \
+  --checkpoint outputs/segformer_b4/checkpoints/best.pt \
+  --input input_1m.tif \
+  --output-mask outputs/prediction_25cm.tif \
+  --target-resolution-m 0.25 \
+  --resampling bilinear
+
+# 경위도 영상: 한국 중부원점 투영 CRS로 변환하면서 25cm/pixel로 추론
+python -m src.infer \
+  --config configs/default.yaml \
+  --checkpoint outputs/segformer_b4/checkpoints/best.pt \
+  --input input_wgs84.tif \
+  --output-mask outputs/prediction_25cm.tif \
+  --target-resolution-m 0.25 \
+  --target-crs EPSG:5179
+```
+
+`bilinear`는 RGB/연속 영상의 기본값이다. 10m 영상을 25cm로 확대하면 픽셀 수가 가로·세로 각각 40배가 되지만 실제 공간 세부정보가 증가하지는 않는다. 과도한 메모리 사용은 `inference.max_resampled_pixels`로 차단하며, 넓은 영상은 먼저 공간 타일로 분할해야 한다. 원본 해상도로 추론하려면 `--set inference.target_resolution_m=null`을 사용한다.
 
 출력:
 
@@ -184,10 +215,10 @@ GPU OOM 시 추론 batch size는 자동으로 절반씩 감소한다. 타일 ove
 ```bash
 python -m src.infer_visualize \
   --config configs/default.yaml \
-  --checkpoint outputs/segformer_b2/checkpoints/best.pt \
+  --checkpoint outputs/segformer_b4/checkpoints/best.pt \
   --input "../data/01.데이터/2.Validation/원천데이터/VS_항공사진_FGT_512픽셀/LC_GS_AP25_34801025_006_2019_FGT.tif" \
   --reference-meta "../data/01.데이터/2.Validation/라벨링데이터/항공사진_FGT_512픽셀_Meta/LC_GS_AP25_34801025_006_2019_FGT_META.json" \
-  --output-dir outputs/segformer_b2/predictions/visualized_sample \
+  --output-dir outputs/segformer_b4/predictions/visualized_sample \
   --batch-size 8
 ```
 
@@ -205,10 +236,10 @@ Validation에서 논·밭 JSON이 실제로 존재하는 샘플 10장을 seed 42
 ```bash
 python -m src.infer_visualize \
   --config configs/default.yaml \
-  --checkpoint outputs/segformer_b2/checkpoints/best.pt \
+  --checkpoint outputs/segformer_b4/checkpoints/best.pt \
   --split validation \
   --sample-count 10 \
-  --output-dir outputs/segformer_b2/predictions/validation_10 \
+  --output-dir outputs/segformer_b4/predictions/validation_10 \
   --batch-size 8
 ```
 
@@ -251,6 +282,6 @@ python -m unittest discover -v
 - CUDA OOM: batch size 또는 tile size를 줄이고 gradient accumulation을 늘린다.
 - `gloo ... Connection closed by peer`: 다른 rank가 먼저 실패한 후속 오류다. 현재 코드는 rank0 원본 traceback을 기록하며, CUDA가 보이지 않는 CPU DDP는 시작 전에 차단한다. 컨테이너 GPU 연결과 CUDA PyTorch 설치를 먼저 확인한다.
 - `ModuleNotFoundError: tqdm`: 최신 코드에서는 진행 막대만 자동 비활성화된다. 기존 코드라면 `python -m pip install tqdm`을 실행한다.
-- `torch.load ... require ... torch 2.6`: 이전 `nvidia/mit-b2` pickle checkpoint를 읽을 때 발생한다. 최신 `configs/model.yaml`의 Safetensors B2 checkpoint/revision을 사용한다. PyTorch를 낮추거나 Transformers의 보안 검사를 우회하지 않는다.
+- H5 구조 불일치: `tf_model.h5`의 encoder 깊이가 B4 `[3,8,27,3]`인지 확인한다. 설정은 `model.h5_architecture=b4`여야 한다.
 - `Grad strides do not match bucket view strides`: SegFormer의 마지막 1×1 classifier가 만드는 singleton stride와 DDP bucket layout 차이다. 최신 모델 어댑터는 classifier gradient를 표준 contiguous stride로 정규화한다.
 - 체크포인트 구조 불일치: checkpoint의 model/dataset 설정과 현재 resolved config를 비교한다.

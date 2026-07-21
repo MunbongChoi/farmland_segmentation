@@ -9,7 +9,7 @@ import rasterio
 import torch
 from rasterio.transform import from_origin
 
-from src.infer import sliding_window_predict_array, write_raster
+from src.infer import run_inference, sliding_window_predict_array, write_raster
 from src.model import UNet
 from src.utils.checkpoint import load_checkpoint, save_checkpoint
 
@@ -49,7 +49,52 @@ class CheckpointInferenceTests(unittest.TestCase):
                 self.assertEqual(source.transform, transform)
                 self.assertEqual(source.shape, (10, 12))
 
+    def test_inference_normalizes_input_grid_to_25cm(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_path = root / "one_metre.tif"
+            output_path = root / "prediction.tif"
+            with rasterio.open(
+                input_path,
+                "w",
+                driver="GTiff",
+                width=10,
+                height=8,
+                count=3,
+                dtype="uint8",
+                crs=rasterio.crs.CRS.from_epsg(5186),
+                transform=from_origin(200000, 600000, 1.0, 1.0),
+            ) as destination:
+                destination.write(np.full((3, 8, 10), 127, dtype=np.uint8))
+            config = {
+                "dataset": {
+                    "channel_indices": [1, 2, 3],
+                    "num_classes": 2,
+                    "mean": [0, 0, 0],
+                    "std": [1, 1, 1],
+                },
+                "inference": {
+                    "tile_size": 16,
+                    "overlap": 4,
+                    "batch_size": 2,
+                    "merge": "average",
+                    "auto_reduce_batch": True,
+                    "require_georeference": True,
+                    "confidence_threshold": 0.0,
+                    "target_resolution_m": 0.25,
+                    "target_crs": None,
+                    "resampling": "bilinear",
+                    "max_resampled_pixels": 10000,
+                },
+                "postprocess": {"enabled": False, "save_instances": False},
+                "output": {"save_probability_map": True},
+            }
+            run_inference(config, "unused.pt", str(input_path), str(output_path), model=TinyModel(), device=torch.device("cpu"))
+            with rasterio.open(output_path) as prediction:
+                self.assertEqual(prediction.shape, (32, 40))
+                self.assertAlmostEqual(abs(prediction.transform.a), 0.25)
+                self.assertAlmostEqual(abs(prediction.transform.e), 0.25)
+
 
 if __name__ == "__main__":
     unittest.main()
-

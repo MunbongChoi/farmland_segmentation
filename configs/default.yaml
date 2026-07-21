@@ -1,9 +1,9 @@
 _base_: [dataset.yaml, model.yaml]
 
 project:
-  name: farmland_segformer_b2
+  name: farmland_segformer_b4
   seed: 42
-  output_dir: outputs/segformer_b2
+  output_dir: outputs/segformer_b4
 
 training:
   epochs: 100
@@ -32,6 +32,13 @@ inference:
   tile_size: 512
   overlap: 128
   batch_size: 8
+  # 모델 학습 기준과 동일한 25cm/pixel 격자에서 추론한다.
+  target_resolution_m: 0.25
+  # 원본이 투영 CRS이면 null로 두어 유지한다. 경위도 입력은 EPSG:5179 등을 지정한다.
+  target_crs: null
+  resampling: bilinear
+  # 25cm 확대에 따른 과도한 메모리/출력을 막는다. 0이면 제한하지 않는다.
+  max_resampled_pixels: 100000000
   merge: hann
   auto_reduce_batch: true
   require_georeference: true

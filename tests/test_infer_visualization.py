@@ -89,6 +89,33 @@ class InferenceVisualizationTests(unittest.TestCase):
             self.assertEqual(mask.shape, (8, 10))
             self.assertEqual(probabilities.shape, (3, 8, 10))
 
+    def test_loader_aligns_lower_resolution_rgb_to_prediction_grid(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image_path = root / "source_1m.tif"
+            mask_path = root / "mask_25cm.tif"
+            probability_path = root / "mask_25cm_probability.tif"
+            crs = rasterio.crs.CRS.from_epsg(5186)
+            with rasterio.open(
+                image_path,
+                "w",
+                driver="GTiff",
+                width=10,
+                height=8,
+                count=3,
+                dtype="uint8",
+                crs=crs,
+                transform=from_origin(200000, 600000, 1.0, 1.0),
+            ) as destination:
+                destination.write(np.full((3, 8, 10), 120, dtype=np.uint8))
+            target_transform = from_origin(200000, 600000, 0.25, 0.25)
+            write_raster(mask_path, np.zeros((32, 40), dtype=np.uint8), crs, target_transform, "uint8", 0)
+            write_raster(probability_path, np.zeros((3, 32, 40), dtype=np.float32), crs, target_transform, "float32")
+            image, mask, probabilities = load_visualization_arrays(image_path, mask_path, probability_path, [1, 2, 3])
+            self.assertEqual(image.shape, (3, 32, 40))
+            self.assertEqual(mask.shape, (32, 40))
+            self.assertEqual(probabilities.shape, (3, 32, 40))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -74,6 +74,7 @@ class ModelLossMetricTests(unittest.TestCase):
             pretrained=True,
             local_files_only=False,
             use_safetensors=True,
+            h5_architecture="b4",
         )
 
     def test_composite_loss_is_finite(self) -> None:
