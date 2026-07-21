@@ -150,8 +150,8 @@ def _load_segformer_model(
     id2label = {index: name for index, name in enumerate(class_names)}
     label2id = {name: index for index, name in id2label.items()}
     source_options = {"revision": revision, "local_files_only": local_files_only}
+    checkpoint_path = Path(checkpoint).expanduser()
     try:
-        checkpoint_path = Path(checkpoint).expanduser()
         if checkpoint_path.suffix.lower() in {".h5", ".hdf5"}:
             if not pretrained:
                 raise ValueError("H5 checkpoint를 지정할 때는 model.pretrained=true여야 합니다.")
@@ -218,6 +218,8 @@ def _load_segformer_model(
         hf_config.num_channels = input_channels
         return SegformerForSemanticSegmentation(hf_config)
     except (OSError, ValueError) as error:
+        if checkpoint_path.suffix.lower() in {".h5", ".hdf5"}:
+            raise RuntimeError(f"TensorFlow SegFormer H5 '{checkpoint}'를 변환하지 못했습니다: {error}") from error
         source = "로컬 캐시" if local_files_only else "Hugging Face Hub 또는 로컬 캐시"
         raise RuntimeError(f"SegFormer checkpoint '{checkpoint}'를 {source}에서 불러오지 못했습니다: {error}") from error
 

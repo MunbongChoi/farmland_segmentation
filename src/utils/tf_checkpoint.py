@@ -56,7 +56,42 @@ def _weight_dataset_name(parameter_name: str) -> str:
     raise KeyError(parameter_name)
 
 
+def _canonical_parameter_name(parameter_name: str) -> str:
+    """Map Transformers 5.x modular SegFormer names to the legacy TF layout."""
+    stage_match = re.match(r"^segformer\.stages\.(\d+)\.(.+)$", parameter_name)
+    if stage_match:
+        stage, relative = stage_match.groups()
+        if relative.startswith("patch_embeddings."):
+            return f"segformer.encoder.patch_embeddings.{stage}.{relative[len('patch_embeddings.') :]}"
+        if relative.startswith("layer_norm."):
+            return f"segformer.encoder.layer_norm.{stage}.{relative[len('layer_norm.') :]}"
+        block_match = re.match(r"^blocks\.(\d+)\.(.+)$", relative)
+        if block_match:
+            block, block_relative = block_match.groups()
+            replacements = (
+                ("layernorm_before.", "layer_norm_1."),
+                ("layernorm_after.", "layer_norm_2."),
+                ("attention.q_proj.", "attention.self.query."),
+                ("attention.k_proj.", "attention.self.key."),
+                ("attention.v_proj.", "attention.self.value."),
+                ("attention.o_proj.", "attention.output.dense."),
+                ("attention.sequence_reduction.sequence_reduction.", "attention.self.sr."),
+                ("attention.sequence_reduction.layer_norm.", "attention.self.layer_norm."),
+                ("mlp.fc1.", "mlp.dense1."),
+                ("mlp.fc2.", "mlp.dense2."),
+            )
+            for new_prefix, legacy_prefix in replacements:
+                if block_relative.startswith(new_prefix):
+                    block_relative = legacy_prefix + block_relative[len(new_prefix) :]
+                    break
+            return f"segformer.encoder.block.{stage}.{block}.{block_relative}"
+    if parameter_name.startswith("decode_head.linear_projections."):
+        return "decode_head.linear_c." + parameter_name[len("decode_head.linear_projections.") :]
+    return parameter_name
+
+
 def _h5_path(parameter_name: str, roots: dict[str, str]) -> str:
+    parameter_name = _canonical_parameter_name(parameter_name)
     if parameter_name.startswith("segformer."):
         relative = parameter_name[len("segformer.") :]
         base = roots["segformer"]

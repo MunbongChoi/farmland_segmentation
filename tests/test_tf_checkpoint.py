@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from src.utils.tf_checkpoint import detect_tf_segformer_depths, load_tf_segformer_h5
+from src.utils.tf_checkpoint import _canonical_parameter_name, detect_tf_segformer_depths, load_tf_segformer_h5
 
 
 class _PatchEmbedding(nn.Module):
@@ -45,6 +45,21 @@ class _FakeSegFormer(nn.Module):
 
 
 class TensorFlowCheckpointTests(unittest.TestCase):
+    def test_transformers_5_modular_names_map_to_tf_h5_names(self) -> None:
+        mappings = {
+            "segformer.stages.0.patch_embeddings.proj.weight": "segformer.encoder.patch_embeddings.0.proj.weight",
+            "segformer.stages.1.blocks.7.layernorm_before.bias": "segformer.encoder.block.1.7.layer_norm_1.bias",
+            "segformer.stages.2.blocks.26.attention.q_proj.weight": "segformer.encoder.block.2.26.attention.self.query.weight",
+            "segformer.stages.2.blocks.0.attention.sequence_reduction.sequence_reduction.weight": "segformer.encoder.block.2.0.attention.self.sr.weight",
+            "segformer.stages.0.blocks.1.attention.o_proj.bias": "segformer.encoder.block.0.1.attention.output.dense.bias",
+            "segformer.stages.3.blocks.2.mlp.fc1.weight": "segformer.encoder.block.3.2.mlp.dense1.weight",
+            "segformer.stages.3.layer_norm.weight": "segformer.encoder.layer_norm.3.weight",
+            "decode_head.linear_projections.2.proj.weight": "decode_head.linear_c.2.proj.weight",
+        }
+        for current, legacy in mappings.items():
+            with self.subTest(current=current):
+                self.assertEqual(_canonical_parameter_name(current), legacy)
+
     def test_b4_depths_are_detected_from_encoder_groups(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "b4.h5"
