@@ -1,0 +1,15 @@
+# SegFormer-B5 실험. 타일 데이터셋 설정은 tiles.yaml을 그대로 상속한다.
+# H5 로더는 b2/b4 전용이므로 B5는 Hugging Face Hub ADE20K 가중치를 사용한다.
+_base_: [tiles.yaml]
+
+project:
+  name: farmland_tiles_segformer_b5
+  output_dir: outputs/tiles_segformer_b5
+
+model:
+  checkpoint: nvidia/segformer-b5-finetuned-ade-640-640
+
+training:
+  # B5는 B4보다 메모리를 더 쓰므로 배치를 절반으로 줄이고 누적으로 유효 배치 8을 유지한다.
+  batch_size: 4
+  gradient_accumulation_steps: 2
