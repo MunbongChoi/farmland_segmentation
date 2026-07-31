@@ -6,6 +6,9 @@ project:
   name: farmland_tiles_segformer_b4
   output_dir: outputs/tiles_segformer_b4
 
+training:
+  epochs: 200
+
 dataset:
   type: tiles
   root_dir: "../data/farmmap"
