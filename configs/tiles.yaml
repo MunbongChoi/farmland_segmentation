@@ -1,0 +1,20 @@
+# 사전 타일링된 데이터셋(images/labels TIF 쌍 + manifest.csv split) 학습 설정.
+# 학습/모델/손실 설정은 default.yaml을 그대로 상속한다.
+_base_: [default.yaml]
+
+project:
+  name: farmland_tiles_segformer_b4
+  output_dir: outputs/tiles_segformer_b4
+
+dataset:
+  type: tiles
+  root_dir: "../data/farmmap"
+  input_channels: 3
+  # 밴드 순서: red, green, blue, nir — 사전학습 SegFormer는 RGB 3채널만 사용한다.
+  channel_indices: [1, 2, 3]
+  tile_size: 512
+  ignore_index: 255
+  num_classes: 3
+  class_names: ["배경", "필지 내부", "필지 경계"]
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]

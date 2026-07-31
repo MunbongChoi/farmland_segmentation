@@ -271,9 +271,13 @@ class GeoTiffPairDataset(Dataset[dict[str, Any]]):
         return random.randint(0, max(0, height - self.tile_size)), random.randint(0, max(0, width - self.tile_size))
 
 
-def build_datasets(config: dict[str, Any]) -> tuple[GeoTiffPairDataset, GeoTiffPairDataset, GeoTiffPairDataset]:
-    """Build filtered train/validation/test datasets from existing JSON labels."""
+def build_datasets(config: dict[str, Any]) -> tuple[Dataset, Dataset, Dataset]:
+    """Build train/validation/test datasets for the configured dataset type."""
     dataset_config = config["dataset"]
+    if str(dataset_config.get("type", "json")) == "tiles":
+        from .tiles import build_tile_datasets
+
+        return build_tile_datasets(config)
     root = dataset_config["root_dir"]
     class_map = {int(key): int(value) for key, value in dataset_config["raw_class_map"].items()}
     property_name = str(dataset_config.get("target_property", "ANN_CD"))
