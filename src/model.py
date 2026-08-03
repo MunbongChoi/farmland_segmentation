@@ -121,6 +121,18 @@ def _contiguous_gradient(gradient: torch.Tensor) -> torch.Tensor:
     return gradient.clone(memory_format=torch.contiguous_format)
 
 
+def _inflate_input_channels(model: nn.Module, input_channels: int) -> None:
+    """Extend the first patch-embedding conv to extra bands, mean-initializing them."""
+    projection = model.segformer.encoder.patch_embeddings[0].proj
+    weight = projection.weight.data
+    extra = input_channels - weight.shape[1]
+    replacement = nn.Conv2d(input_channels, projection.out_channels, kernel_size=projection.kernel_size, stride=projection.stride, padding=projection.padding)
+    replacement.weight.data = torch.cat([weight, weight.mean(dim=1, keepdim=True).repeat(1, extra, 1, 1)], dim=1)
+    replacement.bias.data = projection.bias.data.clone()
+    model.segformer.encoder.patch_embeddings[0].proj = replacement
+    model.config.num_channels = input_channels
+
+
 def _load_segformer_model(
     checkpoint: str,
     revision: str | None,
@@ -142,8 +154,8 @@ def _load_segformer_model(
             "`python -m pip install --upgrade --force-reinstall numpy transformers safetensors`를 실행하세요."
         ) from error
 
-    if pretrained and input_channels != 3:
-        raise ValueError("사전학습 SegFormer는 RGB 3채널 입력만 지원합니다. model.input_channels=3을 사용하세요.")
+    if pretrained and input_channels < 3:
+        raise ValueError("사전학습 SegFormer는 3채널 이상 입력이 필요합니다.")
     if len(class_names) != num_classes:
         raise ValueError("dataset.class_names 길이는 model.num_classes와 같아야 합니다.")
 
@@ -155,6 +167,8 @@ def _load_segformer_model(
         if checkpoint_path.suffix.lower() in {".h5", ".hdf5"}:
             if not pretrained:
                 raise ValueError("H5 checkpoint를 지정할 때는 model.pretrained=true여야 합니다.")
+            if input_channels != 3:
+                raise ValueError("TensorFlow H5 SegFormer는 RGB 3채널만 지원합니다. 4채널은 Hub checkpoint를 사용하세요.")
             architecture = h5_architecture.lower().replace("-", "")
             architecture_depths = {"b2": (3, 4, 6, 3), "b4": (3, 8, 27, 3)}
             if architecture not in architecture_depths:
@@ -208,13 +222,16 @@ def _load_segformer_model(
         hf_config.label2id = label2id
         hf_config.semantic_loss_ignore_index = ignore_index
         if pretrained:
-            return SegformerForSemanticSegmentation.from_pretrained(
+            model = SegformerForSemanticSegmentation.from_pretrained(
                 checkpoint,
                 config=hf_config,
                 ignore_mismatched_sizes=True,
                 use_safetensors=use_safetensors,
                 **source_options,
             )
+            if input_channels != 3:
+                _inflate_input_channels(model, input_channels)
+            return model
         hf_config.num_channels = input_channels
         return SegformerForSemanticSegmentation(hf_config)
     except (OSError, ValueError) as error:

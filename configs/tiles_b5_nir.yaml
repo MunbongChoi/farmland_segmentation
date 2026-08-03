@@ -1,0 +1,18 @@
+# SegFormer-B5 + NIR(4채널) 실험. RGB 실험(tiles_b5.yaml)과 이것만 다르다:
+# 사전학습 RGB 가중치는 유지하고 patch embedding에 NIR 채널을 평균 초기화로 추가한다.
+_base_: [tiles_b5.yaml]
+
+project:
+  name: farmland_tiles_segformer_b5_nir
+  output_dir: outputs/tiles_segformer_b5_nir
+
+dataset:
+  input_channels: 4
+  # 밴드 순서: red, green, blue, nir
+  channel_indices: [1, 2, 3, 4]
+  # NIR 통계는 데이터셋 300개 타일 표본에서 계산 (mean 0.5647, std 0.2597)
+  mean: [0.485, 0.456, 0.406, 0.5647]
+  std: [0.229, 0.224, 0.225, 0.2597]
+
+model:
+  input_channels: 4
