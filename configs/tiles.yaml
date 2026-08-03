@@ -14,6 +14,8 @@ inference:
   target_resolution_m: 0.5
   # 장면 모자이크는 ~9억 픽셀이므로 상한을 해제한다.
   max_resampled_pixels: 0
+  # 경계 확률 watershed로 끊긴 필지 경계를 닫아 인접 필지가 붙지 않게 한다.
+  close_boundaries: true
 
 dataset:
   type: tiles

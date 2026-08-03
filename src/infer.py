@@ -160,6 +160,7 @@ def close_parcel_boundaries(
     boundary_class: int = 2,
     seed_threshold: float = 0.5,
     seed_boundary_maximum: float = 0.15,
+    line_iterations: int = 1,
 ) -> np.ndarray:
     """Bridge argmax boundary gaps with watershed lines over the boundary probability.
 
@@ -184,8 +185,12 @@ def close_parcel_boundaries(
     if not marker_count:
         return mask
     basins = watershed(probabilities[boundary_class], markers, mask=parcel, watershed_line=True)
+    lines = parcel & (basins == 0)
+    if line_iterations:
+        # 1px watershed lines would be re-bridged by the postprocess 3x3 closing.
+        lines = ndimage.binary_dilation(lines, structure, iterations=line_iterations) & parcel
     closed = mask.copy()
-    closed[parcel & (basins == 0)] = boundary_class
+    closed[lines] = boundary_class
     return closed
 
 
@@ -232,7 +237,7 @@ def write_raster(path: str | Path, array: np.ndarray, crs: CRS, transform_value:
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     values = array[None] if array.ndim == 2 else array
-    profile = {"driver": "GTiff", "height": values.shape[1], "width": values.shape[2], "count": values.shape[0], "dtype": dtype, "crs": crs, "transform": transform_value, "compress": "deflate", "nodata": nodata}
+    profile = {"driver": "GTiff", "height": values.shape[1], "width": values.shape[2], "count": values.shape[0], "dtype": dtype, "crs": crs, "transform": transform_value, "compress": "deflate", "nodata": nodata, "bigtiff": "if_safer"}
     with rasterio.open(destination, "w", **profile) as output:
         output.write(values.astype(dtype, copy=False))
 
@@ -344,11 +349,15 @@ def run_inference(
     output_path = Path(output_mask)
     raw_path = output_path.with_name(f"{output_path.stem}_raw{output_path.suffix}")
     write_raster(raw_path, raw_mask, crs, transform_value, "uint8", 0)
+    post_input = raw_mask
+    if bool(inference.get("close_boundaries", False)):
+        # Deliberately rescues sub-threshold ridge pixels; min_area pruning still applies.
+        post_input = close_parcel_boundaries(probabilities)
     post_config = config.get("postprocess", {})
     if post_config.get("enabled", True):
-        processed, instances = postprocess_mask(raw_mask, post_config, transform_value, crs)
+        processed, instances = postprocess_mask(post_input, post_config, transform_value, crs)
     else:
-        processed, instances = raw_mask, np.zeros(raw_mask.shape, dtype=np.uint32)
+        processed, instances = post_input, np.zeros(raw_mask.shape, dtype=np.uint32)
     write_raster(output_path, processed, crs, transform_value, "uint8", 0)
     if config.get("output", {}).get("save_probability_map", True):
         write_raster(output_path.with_name(f"{output_path.stem}_probability.tif"), probabilities, crs, transform_value, "float32")

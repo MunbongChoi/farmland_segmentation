@@ -9,6 +9,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import rasterio
+from rasterio.enums import ColorInterp
 from rasterio.merge import merge
 
 from .utils.config import apply_overrides, load_config
@@ -27,6 +28,9 @@ def merge_scene(paths: list[Path], output: Path) -> Path:
     temporary = output.with_name(output.name + ".tmp")
     with rasterio.open(temporary, "w", driver="GTiff", **{key: value for key, value in profile.items() if key != "driver"}) as destination:
         destination.write(mosaic)
+        if destination.count == 4:
+            # Source tiles mislabel NIR as alpha, which viewers render as transparency.
+            destination.colorinterp = [ColorInterp.red, ColorInterp.green, ColorInterp.blue, ColorInterp.undefined]
     temporary.replace(output)
     return output
 
@@ -68,12 +72,12 @@ def main() -> None:
             merge_scene(paths, mosaic_path)
         if model is not None:
             mask_path = mosaic_path.with_name(f"{scene}_mask.tif")
+            instance_path = mask_path.with_name(f"{mask_path.stem}_instances.tif")
             vector = mosaic_path.with_name(f"{scene}_parcels.gpkg") if config.get("output", {}).get("save_vector", True) else None
-            if mask_path.exists():
-                # Resume: keep finished inference, redo only a missing vector step.
+            # Instances are the last raster written, so their presence marks a finished inference.
+            if mask_path.exists() and (vector is None or instance_path.exists()):
                 logger.info("추론 결과 재사용: %s", mask_path)
                 if vector is not None and not vector.exists():
-                    instance_path = mask_path.with_name(f"{mask_path.stem}_instances.tif")
                     subprocess.run([sys.executable, "-m", "src.vectorize", "--instances", str(instance_path), "--classes", str(mask_path), "--output", str(vector)], check=True)
                 continue
             from .infer import run_inference

@@ -25,9 +25,15 @@ class CloseParcelBoundariesTests(unittest.TestCase):
         self.assertEqual(open_count, 1)  # gap merges both parcels before closing
 
         closed = close_parcel_boundaries(probabilities)
-        _, closed_count = ndimage.label(closed == 1, ndimage.generate_binary_structure(2, 2))
+        structure = ndimage.generate_binary_structure(2, 2)
+        _, closed_count = ndimage.label(closed == 1, structure)
         self.assertEqual(closed_count, 2)
         self.assertTrue((closed[8:12, 9:11] == 2).any())  # gap now holds boundary pixels
+
+        # The dividing line must survive the postprocess 3x3 binary closing.
+        reclosed = ndimage.binary_closing(closed == 1, structure, iterations=1)
+        _, reclosed_count = ndimage.label(reclosed, structure)
+        self.assertEqual(reclosed_count, 2)
 
     def test_pure_interior_returns_argmax_unchanged(self) -> None:
         probabilities = np.zeros((3, 8, 8), dtype=np.float32)
