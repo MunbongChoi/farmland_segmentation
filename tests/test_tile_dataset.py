@@ -9,6 +9,7 @@ import rasterio
 import torch
 
 from src.datasets.tiles import build_tile_datasets
+from src.visualize_tiles import _read_context_window
 
 
 def _write_tiles(root: Path, names_by_split: dict[str, list[str]]) -> None:
@@ -44,6 +45,22 @@ class TileDatasetTests(unittest.TestCase):
             self.assertEqual(tuple(sample["mask"].shape), (16, 16))
             self.assertEqual(set(torch.unique(sample["mask"]).tolist()), {0, 1, 2})
             self.assertAlmostEqual(float(sample["image"].max()), 128 / 255, places=5)
+
+    def test_context_window_uses_neighbors_and_zero_fills_edges(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "images").mkdir()
+            for row in (0, 1):
+                for col in (0, 1):
+                    value = 10 * row + col + 1
+                    with rasterio.open(root / "images" / f"s_{row:03d}_{col:03d}.tif", "w", driver="GTiff", height=8, width=8, count=1, dtype="uint8") as output:
+                        output.write(np.full((1, 8, 8), value, dtype=np.uint8))
+            window = _read_context_window(root, "s_001_001", (1,), tile_size=8, margin=4)
+            self.assertEqual(window.shape, (1, 16, 16))
+            self.assertTrue((window[0, 4:12, 4:12] == 12).all())  # center = tile itself
+            self.assertTrue((window[0, :4, :4] == 1).all())       # top-left from neighbor (0,0)
+            self.assertTrue((window[0, :4, 4:12] == 2).all())     # top from neighbor (0,1)
+            self.assertTrue((window[0, 12:, :] == 0).all())       # missing bottom neighbors -> zeros
 
     def test_missing_split_raises(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

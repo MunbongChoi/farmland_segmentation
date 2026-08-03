@@ -154,6 +154,41 @@ def _minimum_pixels(value: float, unit: str, transform_value: Affine, crs: CRS |
     return max(0, round(value / pixel_area))
 
 
+def close_parcel_boundaries(
+    probabilities: np.ndarray,
+    interior_class: int = 1,
+    boundary_class: int = 2,
+    seed_threshold: float = 0.5,
+    seed_boundary_maximum: float = 0.15,
+) -> np.ndarray:
+    """Bridge argmax boundary gaps with watershed lines over the boundary probability.
+
+    Argmax drops faint boundary ridges, leaving open parcel outlines. Seeding
+    confident interior regions and flooding the boundary-probability surface
+    draws a closed dividing line wherever two parcels meet, even through gaps.
+    """
+    try:
+        from skimage.segmentation import watershed
+    except ImportError as error:
+        raise RuntimeError("watershed 후처리에는 scikit-image가 필요합니다: pip install scikit-image") from error
+    mask = probabilities.argmax(axis=0).astype(np.uint8)
+    parcel = (mask == interior_class) | (mask == boundary_class)
+    structure = ndimage.generate_binary_structure(2, 2)
+    seeds = (probabilities[interior_class] > seed_threshold) & (probabilities[boundary_class] < seed_boundary_maximum) & parcel
+    # Every argmax-interior component must own a seed, or it would flood as boundary.
+    interior_labels, count = ndimage.label(mask == interior_class, structure)
+    seeded = np.zeros(count + 1, dtype=bool)
+    seeded[interior_labels[seeds]] = True
+    seeds |= (interior_labels > 0) & ~seeded[interior_labels]
+    markers, marker_count = ndimage.label(seeds, structure)
+    if not marker_count:
+        return mask
+    basins = watershed(probabilities[boundary_class], markers, mask=parcel, watershed_line=True)
+    closed = mask.copy()
+    closed[parcel & (basins == 0)] = boundary_class
+    return closed
+
+
 def postprocess_mask(mask: np.ndarray, config: dict[str, Any], transform_value: Affine, crs: CRS | None) -> tuple[np.ndarray, np.ndarray]:
     """Clean each class and derive per-object connected-component IDs."""
     processed = np.zeros(mask.shape, dtype=np.uint8)
