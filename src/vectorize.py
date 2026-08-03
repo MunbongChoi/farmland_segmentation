@@ -19,7 +19,8 @@ def vectorize(instance_raster: str | Path, class_raster: str | Path, output: str
             raise ValueError("instance/class raster의 크기 또는 Transform이 다릅니다.")
         if instance_source.crs is None:
             raise ValueError("instance raster에 CRS가 없습니다.")
-        instances = instance_source.read(1)
+        # shapes()는 uint32를 받지 않는다. 인스턴스 수는 int32 범위를 넘지 않는다.
+        instances = instance_source.read(1).astype("int32")
         classes = class_source.read(1)
         records = []
         for geometry, value in shapes(instances, mask=instances > 0, transform=instance_source.transform, connectivity=8):

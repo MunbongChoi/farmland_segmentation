@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -65,10 +67,18 @@ def main() -> None:
             logger.info("모자이크 생성: %s (tiles=%d)", scene, len(paths))
             merge_scene(paths, mosaic_path)
         if model is not None:
+            mask_path = mosaic_path.with_name(f"{scene}_mask.tif")
+            vector = mosaic_path.with_name(f"{scene}_parcels.gpkg") if config.get("output", {}).get("save_vector", True) else None
+            if mask_path.exists():
+                # Resume: keep finished inference, redo only a missing vector step.
+                logger.info("추론 결과 재사용: %s", mask_path)
+                if vector is not None and not vector.exists():
+                    instance_path = mask_path.with_name(f"{mask_path.stem}_instances.tif")
+                    subprocess.run([sys.executable, "-m", "src.vectorize", "--instances", str(instance_path), "--classes", str(mask_path), "--output", str(vector)], check=True)
+                continue
             from .infer import run_inference
 
-            vector = str(mosaic_path.with_name(f"{scene}_parcels.gpkg")) if config.get("output", {}).get("save_vector", True) else None
-            run_inference(config, args.checkpoint, str(mosaic_path), str(mosaic_path.with_name(f"{scene}_mask.tif")), output_vector=vector, model=model, device=device)
+            run_inference(config, args.checkpoint, str(mosaic_path), str(mask_path), output_vector=str(vector) if vector else None, model=model, device=device)
 
 
 if __name__ == "__main__":
