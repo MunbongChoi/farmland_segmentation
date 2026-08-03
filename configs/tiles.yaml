@@ -9,6 +9,12 @@ project:
 training:
   epochs: 200
 
+inference:
+  # 이 데이터셋은 0.5m GSD로 학습하므로 default의 0.25m 격자를 쓰지 않는다.
+  target_resolution_m: 0.5
+  # 장면 모자이크는 ~9억 픽셀이므로 상한을 해제한다.
+  max_resampled_pixels: 0
+
 dataset:
   type: tiles
   root_dir: "../data/farmmap"
