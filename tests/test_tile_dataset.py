@@ -9,7 +9,7 @@ import rasterio
 import torch
 
 from src.datasets.tiles import build_tile_datasets
-from src.visualize_tiles import _read_context_window
+from src.visualize_tiles import _parcel_polygons, _read_context_window
 
 
 def _write_tiles(root: Path, names_by_split: dict[str, list[str]]) -> None:
@@ -61,6 +61,15 @@ class TileDatasetTests(unittest.TestCase):
             self.assertTrue((window[0, :4, :4] == 1).all())       # top-left from neighbor (0,0)
             self.assertTrue((window[0, :4, 4:12] == 2).all())     # top from neighbor (0,1)
             self.assertTrue((window[0, 12:, :] == 0).all())       # missing bottom neighbors -> zeros
+
+    def test_parcel_polygons_split_components_and_drop_small(self) -> None:
+        interior = np.zeros((20, 20), dtype=bool)
+        interior[2:10, 2:10] = True
+        interior[12:18, 12:18] = True
+        interior[0, 19] = True  # single-pixel noise
+        rings = _parcel_polygons(interior, minimum_pixels=4)
+        self.assertEqual(len(rings), 2)
+        self.assertTrue(all(ring.shape[1] == 2 for ring in rings))
 
     def test_missing_split_raises(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
