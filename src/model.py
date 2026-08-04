@@ -122,14 +122,25 @@ def _contiguous_gradient(gradient: torch.Tensor) -> torch.Tensor:
 
 
 def _inflate_input_channels(model: nn.Module, input_channels: int) -> None:
-    """Extend the first patch-embedding conv to extra bands, mean-initializing them."""
-    projection = model.segformer.encoder.patch_embeddings[0].proj
-    weight = projection.weight.data
+    """Extend the first RGB conv to extra bands, mean-initializing the new weights.
+
+    Transformers renames SegFormer internals across versions (encoder/patch_embeddings
+    vs stages/blocks), so the stem is located by shape: the only Conv2d taking 3
+    channels is the patch embedding.
+    """
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Conv2d) and module.in_channels == 3:
+            break
+    else:
+        raise ValueError("3채널 입력 conv를 찾지 못해 NIR 채널을 추가할 수 없습니다.")
+    weight = module.weight.data
     extra = input_channels - weight.shape[1]
-    replacement = nn.Conv2d(input_channels, projection.out_channels, kernel_size=projection.kernel_size, stride=projection.stride, padding=projection.padding)
+    replacement = nn.Conv2d(input_channels, module.out_channels, kernel_size=module.kernel_size, stride=module.stride, padding=module.padding, bias=module.bias is not None)
     replacement.weight.data = torch.cat([weight, weight.mean(dim=1, keepdim=True).repeat(1, extra, 1, 1)], dim=1)
-    replacement.bias.data = projection.bias.data.clone()
-    model.segformer.encoder.patch_embeddings[0].proj = replacement
+    if module.bias is not None:
+        replacement.bias.data = module.bias.data.clone()
+    parent_name, _, attribute = name.rpartition(".")
+    setattr(model.get_submodule(parent_name), attribute, replacement)
     model.config.num_channels = input_channels
 
 
