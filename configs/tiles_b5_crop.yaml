@@ -1,0 +1,18 @@
+# 경지구분 8클래스 실험 (팜맵 CLSF_CD 기반). NIR 4채널 설정을 상속한다.
+# 라벨은 src.make_crop_labels로 생성한 labels_crop/ 디렉토리를 사용한다.
+_base_: [tiles_b5_nir.yaml]
+
+project:
+  name: farmland_tiles_b5_crop
+  output_dir: outputs/tiles_segformer_b5_crop
+
+dataset:
+  label_dir: labels_crop
+  num_classes: 8
+  class_names: ["배경", "논", "밭", "과수", "시설", "인삼", "비경지", "필지 경계"]
+
+model:
+  num_classes: 8
+
+inference:
+  boundary_class: 7

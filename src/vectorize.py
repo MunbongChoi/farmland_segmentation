@@ -12,7 +12,7 @@ from rasterio.features import shapes
 from shapely.geometry import shape
 
 
-def vectorize(instance_raster: str | Path, class_raster: str | Path, output: str | Path) -> None:
+def vectorize(instance_raster: str | Path, class_raster: str | Path, output: str | Path, class_names: list[str] | None = None) -> None:
     """Convert connected-component IDs to class-attributed polygons."""
     with rasterio.open(instance_raster) as instance_source, rasterio.open(class_raster) as class_source:
         if instance_source.shape != class_source.shape or instance_source.transform != class_source.transform:
@@ -38,6 +38,8 @@ def vectorize(instance_raster: str | Path, class_raster: str | Path, output: str
             {"instance_id": pd.Series(dtype="int64"), "class_id": pd.Series(dtype="int64")},
             geometry=gpd.GeoSeries([], crs=crs),
         )
+    if class_names:
+        frame["class_name"] = frame["class_id"].map(lambda index: class_names[index] if 0 <= index < len(class_names) else str(index))
     if crs.is_projected:
         frame["area_m2"] = frame.geometry.area
     destination = Path(output)
@@ -56,8 +58,9 @@ def main() -> None:
     parser.add_argument("--instances", required=True)
     parser.add_argument("--classes", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--class-names", help="쉼표로 구분한 클래스 이름 목록 (class_id 순서)")
     args = parser.parse_args()
-    vectorize(args.instances, args.classes, args.output)
+    vectorize(args.instances, args.classes, args.output, args.class_names.split(",") if args.class_names else None)
 
 
 if __name__ == "__main__":

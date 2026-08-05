@@ -11,8 +11,13 @@ import numpy as np
 DEFAULT_PALETTE = np.asarray(
     [
         [0, 0, 0],       # 0: background
-        [60, 180, 75],   # 1: paddy
-        [255, 165, 0],   # 2: field
+        [60, 180, 75],   # 1: 논 (tiles: parcel interior)
+        [255, 165, 0],   # 2: 밭 (tiles: parcel boundary)
+        [150, 80, 200],  # 3: 과수
+        [70, 140, 230],  # 4: 시설
+        [235, 110, 180], # 5: 인삼
+        [150, 150, 150], # 6: 비경지
+        [230, 50, 50],   # 7: 필지 경계
     ],
     dtype=np.uint8,
 )
@@ -96,7 +101,7 @@ def save_inference_visualizations(
         raise ValueError("원본 영상과 추론 mask의 크기가 다릅니다.")
     if probabilities.ndim != 3 or probabilities.shape[1:] != mask.shape:
         raise ValueError("probabilities는 C,H,W이고 mask와 공간 크기가 같아야 합니다.")
-    if probabilities.shape[0] < len(DEFAULT_PALETTE):
+    if probabilities.shape[0] < 3:
         raise ValueError("배경/논/밭 확률 3개 밴드가 필요합니다.")
 
     destination = Path(output_dir)

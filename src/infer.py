@@ -156,7 +156,6 @@ def _minimum_pixels(value: float, unit: str, transform_value: Affine, crs: CRS |
 
 def close_parcel_boundaries(
     probabilities: np.ndarray,
-    interior_class: int = 1,
     boundary_class: int = 2,
     seed_threshold: float = 0.5,
     seed_boundary_maximum: float = 0.15,
@@ -167,17 +166,22 @@ def close_parcel_boundaries(
     Argmax drops faint boundary ridges, leaving open parcel outlines. Seeding
     confident interior regions and flooding the boundary-probability surface
     draws a closed dividing line wherever two parcels meet, even through gaps.
+    Every non-background class except ``boundary_class`` counts as interior, so
+    the same routine serves both the 3-class and crop-class label schemes.
     """
     try:
         from skimage.segmentation import watershed
     except ImportError as error:
         raise RuntimeError("watershed 후처리에는 scikit-image가 필요합니다: pip install scikit-image") from error
     mask = probabilities.argmax(axis=0).astype(np.uint8)
-    parcel = (mask == interior_class) | (mask == boundary_class)
+    parcel = mask > 0
+    interior = parcel & (mask != boundary_class)
+    interior_indices = [index for index in range(1, probabilities.shape[0]) if index != boundary_class]
+    interior_probability = probabilities[interior_indices].sum(axis=0)
     structure = ndimage.generate_binary_structure(2, 2)
-    seeds = (probabilities[interior_class] > seed_threshold) & (probabilities[boundary_class] < seed_boundary_maximum) & parcel
+    seeds = (interior_probability > seed_threshold) & (probabilities[boundary_class] < seed_boundary_maximum) & parcel
     # Every argmax-interior component must own a seed, or it would flood as boundary.
-    interior_labels, count = ndimage.label(mask == interior_class, structure)
+    interior_labels, count = ndimage.label(interior, structure)
     seeded = np.zeros(count + 1, dtype=bool)
     seeded[interior_labels[seeds]] = True
     seeds |= (interior_labels > 0) & ~seeded[interior_labels]
@@ -232,7 +236,20 @@ def postprocess_mask(mask: np.ndarray, config: dict[str, Any], transform_value: 
     return processed, instances
 
 
-def write_raster(path: str | Path, array: np.ndarray, crs: CRS, transform_value: Affine, dtype: str, nodata: int | float | None = None) -> None:
+# 클래스 표시색 — visualization.DEFAULT_PALETTE와 동일하게 유지한다.
+CLASS_COLORMAP = {
+    0: (0, 0, 0, 0),
+    1: (60, 180, 75, 255),    # 논 (tiles: 필지 내부)
+    2: (255, 165, 0, 255),    # 밭 (tiles: 필지 경계)
+    3: (150, 80, 200, 255),   # 과수
+    4: (70, 140, 230, 255),   # 시설
+    5: (235, 110, 180, 255),  # 인삼
+    6: (150, 150, 150, 255),  # 비경지
+    7: (230, 50, 50, 255),    # 필지 경계
+}
+
+
+def write_raster(path: str | Path, array: np.ndarray, crs: CRS, transform_value: Affine, dtype: str, nodata: int | float | None = None, colormap: dict[int, tuple[int, int, int, int]] | None = None) -> None:
     """Write a 2D or channel-first GeoTIFF preserving spatial metadata."""
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -240,6 +257,8 @@ def write_raster(path: str | Path, array: np.ndarray, crs: CRS, transform_value:
     profile = {"driver": "GTiff", "height": values.shape[1], "width": values.shape[2], "count": values.shape[0], "dtype": dtype, "crs": crs, "transform": transform_value, "compress": "deflate", "nodata": nodata, "bigtiff": "if_safer"}
     with rasterio.open(destination, "w", **profile) as output:
         output.write(values.astype(dtype, copy=False))
+        if colormap and values.shape[0] == 1:
+            output.write_colormap(1, colormap)
 
 
 def load_inference_model(
@@ -348,17 +367,17 @@ def run_inference(
     raw_mask[foreground & (probabilities.max(0) < confidence_threshold)] = 0
     output_path = Path(output_mask)
     raw_path = output_path.with_name(f"{output_path.stem}_raw{output_path.suffix}")
-    write_raster(raw_path, raw_mask, crs, transform_value, "uint8", 0)
+    write_raster(raw_path, raw_mask, crs, transform_value, "uint8", 0, CLASS_COLORMAP)
     post_input = raw_mask
     if bool(inference.get("close_boundaries", False)):
         # Deliberately rescues sub-threshold ridge pixels; min_area pruning still applies.
-        post_input = close_parcel_boundaries(probabilities)
+        post_input = close_parcel_boundaries(probabilities, int(inference.get("boundary_class", 2)))
     post_config = config.get("postprocess", {})
     if post_config.get("enabled", True):
         processed, instances = postprocess_mask(post_input, post_config, transform_value, crs)
     else:
         processed, instances = post_input, np.zeros(raw_mask.shape, dtype=np.uint32)
-    write_raster(output_path, processed, crs, transform_value, "uint8", 0)
+    write_raster(output_path, processed, crs, transform_value, "uint8", 0, CLASS_COLORMAP)
     if config.get("output", {}).get("save_probability_map", True):
         write_raster(output_path.with_name(f"{output_path.stem}_probability.tif"), probabilities, crs, transform_value, "float32")
     instance_path = output_path.with_name(f"{output_path.stem}_instances.tif")
@@ -366,10 +385,11 @@ def run_inference(
         write_raster(instance_path, instances, crs, transform_value, "uint32", 0)
     if output_vector:
         try:
-            subprocess.run(
-                [sys.executable, "-m", "src.vectorize", "--instances", str(instance_path), "--classes", str(output_path), "--output", str(output_vector)],
-                check=True,
-            )
+            command = [sys.executable, "-m", "src.vectorize", "--instances", str(instance_path), "--classes", str(output_path), "--output", str(output_vector)]
+            class_names = dataset.get("class_names")
+            if class_names:
+                command += ["--class-names", ",".join(str(name) for name in class_names)]
+            subprocess.run(command, check=True)
         except subprocess.CalledProcessError as error:
             raise RuntimeError("벡터 변환에 실패했습니다. GeoPandas/pyogrio 설치와 출력 확장자를 확인하세요.") from error
     logger.info("추론 완료: raw=%s postprocessed=%s", raw_path, output_path)

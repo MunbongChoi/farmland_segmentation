@@ -39,6 +39,7 @@ class TileDataset(Dataset[dict[str, Any]]):
     ) -> None:
         self.root = root
         self.tiles = tiles
+        self.label_dir = str(dataset_config.get("label_dir", "labels"))
         self.channels = tuple(int(value) for value in dataset_config["channel_indices"])
         if len(self.channels) != int(dataset_config["input_channels"]):
             raise ValueError("channel_indices 개수와 input_channels가 다릅니다.")
@@ -52,7 +53,7 @@ class TileDataset(Dataset[dict[str, Any]]):
     def __getitem__(self, index: int) -> dict[str, Any]:
         name = self.tiles[index]
         image_path = self.root / "images" / f"{name}.tif"
-        label_path = self.root / "labels" / f"{name}.tif"
+        label_path = self.root / self.label_dir / f"{name}.tif"
         with rasterio.open(image_path) as source:
             if max(self.channels) > source.count:
                 raise ValueError(f"입력 밴드가 부족합니다: {image_path} (bands={source.count})")

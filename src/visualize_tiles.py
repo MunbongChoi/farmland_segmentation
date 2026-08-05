@@ -70,7 +70,8 @@ def _predict_tile(model: torch.nn.Module, dataset: Any, config: dict, sample: di
     if margin:
         logits = logits[..., margin:-margin, margin:-margin]
     probabilities = logits.softmax(dim=1)[0].cpu().numpy()
-    return close_parcel_boundaries(probabilities) if use_watershed else probabilities.argmax(axis=0)
+    boundary_class = int(config.get("inference", {}).get("boundary_class", 2))
+    return close_parcel_boundaries(probabilities, boundary_class) if use_watershed else probabilities.argmax(axis=0)
 
 
 def main() -> None:
@@ -127,10 +128,11 @@ def main() -> None:
             compare_prediction = _predict_tile(compare_model, compare_dataset, compare_config, compare_dataset[index], margin, args.watershed)
             tiles.append(_title_tile(blend_mask(rgb, compare_prediction), f"Pred B: {Path(args.compare_config).stem}"))
         panel = rgb.copy()
-        _draw_outlines(panel, _parcel_polygons(mask == 1, args.min_parcel_pixels), (40, 110, 255))
+        boundary = int(config.get("inference", {}).get("boundary_class", 2))
+        _draw_outlines(panel, _parcel_polygons((mask > 0) & (mask != boundary), args.min_parcel_pixels), (40, 110, 255))
         legend = ["GT blue"]
         if prediction is not None:
-            predicted_rings = _parcel_polygons(prediction == 1, args.min_parcel_pixels)
+            predicted_rings = _parcel_polygons((prediction > 0) & (prediction != boundary), args.min_parcel_pixels)
             _draw_outlines(panel, predicted_rings, (255, 40, 40))
             legend.append("A red")
             with rasterio.open(sample["path"]) as source:
@@ -138,7 +140,8 @@ def main() -> None:
                     for ring in predicted_rings:
                         vector_records.append({"tile": Path(sample["path"]).stem, "crs": source.crs, "ring": [tuple(source.transform * tuple(point)) for point in ring]})
         if compare_prediction is not None:
-            _draw_outlines(panel, _parcel_polygons(compare_prediction == 1, args.min_parcel_pixels), (255, 210, 0))
+            compare_boundary = int(compare_config.get("inference", {}).get("boundary_class", 2))
+            _draw_outlines(panel, _parcel_polygons((compare_prediction > 0) & (compare_prediction != compare_boundary), args.min_parcel_pixels), (255, 210, 0))
             legend.append("B yellow")
         tiles.append(_title_tile(panel, f"Parcels ({' / '.join(legend)})"))
         rows.append(np.hstack(tiles))

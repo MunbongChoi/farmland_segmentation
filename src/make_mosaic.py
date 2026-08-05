@@ -78,7 +78,11 @@ def main() -> None:
             if mask_path.exists() and (vector is None or instance_path.exists()):
                 logger.info("추론 결과 재사용: %s", mask_path)
                 if vector is not None and not vector.exists():
-                    subprocess.run([sys.executable, "-m", "src.vectorize", "--instances", str(instance_path), "--classes", str(mask_path), "--output", str(vector)], check=True)
+                    command = [sys.executable, "-m", "src.vectorize", "--instances", str(instance_path), "--classes", str(mask_path), "--output", str(vector)]
+                    class_names = config["dataset"].get("class_names")
+                    if class_names:
+                        command += ["--class-names", ",".join(str(name) for name in class_names)]
+                    subprocess.run(command, check=True)
                 continue
             from .infer import run_inference
 
