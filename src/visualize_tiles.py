@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import random
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -55,10 +56,29 @@ def _draw_outlines(image: np.ndarray, rings: list[np.ndarray], color: tuple[int,
         cv2.polylines(image, [np.round(ring).astype(np.int32)], True, color, 2, cv2.LINE_AA)
 
 
+def _predict_tile(model: torch.nn.Module, dataset: Any, config: dict, sample: dict, margin: int, use_watershed: bool) -> np.ndarray:
+    """Predict one tile with optional neighbor context and watershed closing."""
+    device = next(model.parameters()).device
+    if margin:
+        window = _read_context_window(dataset.root, Path(sample["path"]).stem, dataset.channels, int(config["dataset"]["tile_size"]), margin)
+        values = (window.astype(np.float32) / 255.0 - dataset.mean) / dataset.std
+        inputs = torch.from_numpy(np.ascontiguousarray(values))[None].float()
+    else:
+        inputs = sample["image"][None]
+    with torch.inference_mode():
+        logits = model(inputs.to(device))
+    if margin:
+        logits = logits[..., margin:-margin, margin:-margin]
+    probabilities = logits.softmax(dim=1)[0].cpu().numpy()
+    return close_parcel_boundaries(probabilities) if use_watershed else probabilities.argmax(axis=0)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="타일 데이터셋 샘플/예측 시각화")
     parser.add_argument("--config", required=True)
     parser.add_argument("--checkpoint", help="지정하면 모델 예측 열을 추가한다")
+    parser.add_argument("--compare-config", help="비교 모델의 config (–compare-checkpoint와 함께)")
+    parser.add_argument("--compare-checkpoint", help="지정하면 두 번째 예측 열을 추가한다")
     parser.add_argument("--split", choices=["train", "val", "test"], default="val")
     parser.add_argument("--count", type=int, default=6)
     parser.add_argument("--context-margin", type=int, default=256, help="이웃 타일에서 가져올 추론 문맥 픽셀. 0이면 타일 단독 추론")
@@ -79,6 +99,16 @@ def main() -> None:
         model = build_model(config).to(device).eval()
         load_checkpoint(args.checkpoint, model, current_config=config, map_location=device)
 
+    if bool(args.compare_config) != bool(args.compare_checkpoint):
+        parser.error("--compare-config와 --compare-checkpoint는 함께 지정해야 합니다.")
+    compare_model = compare_config = compare_dataset = None
+    if args.compare_checkpoint:
+        compare_config = apply_overrides(load_config(args.compare_config), args.set)
+        compare_dataset = dict(zip(("train", "val", "test"), build_datasets(compare_config)))[args.split]
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        compare_model = build_model(compare_config).to(device).eval()
+        load_checkpoint(args.compare_checkpoint, compare_model, current_config=compare_config, map_location=device)
+
     channels = tuple(int(value) for value in config["dataset"]["channel_indices"][:3])
     rows = []
     vector_records: list[dict] = []
@@ -88,32 +118,29 @@ def main() -> None:
             rgb = np.moveaxis(source.read(channels), 0, -1)
         mask = sample["mask"].numpy()
         tiles = [_title_tile(rgb, Path(sample["path"]).stem[-12:]), _title_tile(blend_mask(rgb, mask), "Ground truth")]
+        margin = max(0, args.context_margin)
+        prediction = compare_prediction = None
         if model is not None:
-            device = next(model.parameters()).device
-            margin = max(0, args.context_margin)
-            if margin:
-                window = _read_context_window(dataset.root, Path(sample["path"]).stem, dataset.channels, int(config["dataset"]["tile_size"]), margin)
-                values = (window.astype(np.float32) / 255.0 - dataset.mean) / dataset.std
-                inputs = torch.from_numpy(np.ascontiguousarray(values))[None].float()
-            else:
-                inputs = sample["image"][None]
-            with torch.inference_mode():
-                logits = model(inputs.to(device))
-            if margin:
-                logits = logits[..., margin:-margin, margin:-margin]
-            probabilities = logits.softmax(dim=1)[0].cpu().numpy()
-            prediction = close_parcel_boundaries(probabilities) if args.watershed else probabilities.argmax(axis=0)
-            tiles.append(_title_tile(blend_mask(rgb, prediction), "Prediction"))
+            prediction = _predict_tile(model, dataset, config, sample, margin, args.watershed)
+            tiles.append(_title_tile(blend_mask(rgb, prediction), f"Pred A: {Path(args.config).stem}"))
+        if compare_model is not None:
+            compare_prediction = _predict_tile(compare_model, compare_dataset, compare_config, compare_dataset[index], margin, args.watershed)
+            tiles.append(_title_tile(blend_mask(rgb, compare_prediction), f"Pred B: {Path(args.compare_config).stem}"))
         panel = rgb.copy()
         _draw_outlines(panel, _parcel_polygons(mask == 1, args.min_parcel_pixels), (40, 110, 255))
-        if model is not None:
+        legend = ["GT blue"]
+        if prediction is not None:
             predicted_rings = _parcel_polygons(prediction == 1, args.min_parcel_pixels)
             _draw_outlines(panel, predicted_rings, (255, 40, 40))
+            legend.append("A red")
             with rasterio.open(sample["path"]) as source:
                 if source.crs is not None and not source.transform.is_identity:
                     for ring in predicted_rings:
                         vector_records.append({"tile": Path(sample["path"]).stem, "crs": source.crs, "ring": [tuple(source.transform * tuple(point)) for point in ring]})
-        tiles.append(_title_tile(panel, "Parcels (GT blue / Pred red)" if model is not None else "Parcels (GT blue)"))
+        if compare_prediction is not None:
+            _draw_outlines(panel, _parcel_polygons(compare_prediction == 1, args.min_parcel_pixels), (255, 210, 0))
+            legend.append("B yellow")
+        tiles.append(_title_tile(panel, f"Parcels ({' / '.join(legend)})"))
         rows.append(np.hstack(tiles))
 
     output = Path(args.output) if args.output else Path(config["project"]["output_dir"]) / "visualizations" / f"{args.split}_samples.png"
