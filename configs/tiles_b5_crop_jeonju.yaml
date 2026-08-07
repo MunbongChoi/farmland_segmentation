@@ -1,0 +1,14 @@
+# 전주 권역 L3M(국토위성 0.5m RGBN) 경지구분 8클래스 학습.
+# 데이터셋은 src.make_tiles + src.make_crop_labels로 생성한 ../data/farmmap_jeonju를 사용한다.
+# 주의: 이 장면에는 인삼(5)·비경지(6) 표본이 사실상 없다 (각 0.00%/0.03%).
+_base_: [tiles_b5_crop.yaml]
+
+project:
+  name: farmland_tiles_b5_crop_jeonju
+  output_dir: outputs/tiles_segformer_b5_crop_jeonju
+
+dataset:
+  root_dir: "../data/farmmap_jeonju"
+  # train split 300타일 표본 통계 (R, G, B, NIR) — src.make_tiles 산출물 기준.
+  mean: [0.3642, 0.3178, 0.2871, 0.4306]
+  std: [0.2184, 0.2105, 0.2121, 0.2339]

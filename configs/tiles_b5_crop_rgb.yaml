@@ -1,0 +1,20 @@
+# 전주(L3M RGBN)+익산(C1 RGB) 통합 RGB 3채널 경지구분 8클래스 학습.
+# root는 src.merge_tile_datasets로 두 데이터셋을 hardlink 병합한 ../data/farmmap_rgb.
+# 전주 타일은 4밴드지만 channel_indices [1,2,3]으로 RGB만 읽는다.
+# 주의: 인삼(5)·비경지(6) 표본이 사실상 없다.
+_base_: [tiles_b5_crop.yaml]
+
+project:
+  name: farmland_tiles_b5_crop_rgb
+  output_dir: outputs/tiles_segformer_b5_crop_rgb
+
+dataset:
+  root_dir: "../data/farmmap_rgb"
+  input_channels: 3
+  channel_indices: [1, 2, 3]
+  # 통합 train split 400타일 표본 통계 (R, G, B).
+  mean: [0.2881, 0.2633, 0.2495]
+  std: [0.2283, 0.2202, 0.2192]
+
+model:
+  input_channels: 3

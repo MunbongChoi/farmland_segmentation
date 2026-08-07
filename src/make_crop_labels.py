@@ -22,6 +22,7 @@ def main() -> None:
     parser.add_argument("--root", required=True, help="타일 데이터셋 root (images/ 포함)")
     parser.add_argument("--label-dir", default="labels_crop")
     parser.add_argument("--boundary-iterations", type=int, default=1, help="경계선 추가 팽창 횟수 (0=순수 에지 ~2px)")
+    parser.add_argument("--nodata-ignore", type=int, help="영상 전밴드가 이 값인 픽셀을 ignore_index(255)로 마스킹")
     args = parser.parse_args()
 
     import pandas as pd
@@ -45,6 +46,7 @@ def main() -> None:
     for count, path in enumerate(images, start=1):
         with rasterio.open(path) as source:
             shape, transform, crs, bounds = source.shape, source.transform, source.crs, source.bounds
+            invalid = (source.read().max(axis=0) == args.nodata_ignore) if args.nodata_ignore is not None else None
         candidates = list(spatial_index.intersection(bounds))
         if candidates:
             # 필지 ID로 래스터화해야 같은 클래스인 인접 필지 사이에도 경계가 생긴다.
@@ -60,6 +62,8 @@ def main() -> None:
         if args.boundary_iterations:
             edges = ndimage.binary_dilation(edges, structure, iterations=args.boundary_iterations) & parcel
         label[edges] = BOUNDARY_CLASS
+        if invalid is not None:
+            label[invalid] = 255
         profile = {"driver": "GTiff", "height": shape[0], "width": shape[1], "count": 1, "dtype": "uint8", "crs": crs, "transform": transform, "compress": "deflate", "nodata": None}
         with rasterio.open(output_dir / path.name, "w", **profile) as destination:
             destination.write(label, 1)

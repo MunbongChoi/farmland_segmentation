@@ -1,0 +1,20 @@
+# 익산 권역 C1 L2G(국토위성 0.5m, 2025-08-24) 경지구분 8클래스 학습.
+# 이 장면은 R/G/B 3밴드만 있으므로 NIR 상속을 되돌려 RGB 3채널로 학습한다.
+# 데이터셋은 src.make_tiles + src.make_crop_labels로 생성한 ../data/farmmap_c1.
+# 주의: 인삼(5)·비경지(6) 표본이 사실상 없다 (0.00%/0.07%).
+_base_: [tiles_b5_crop.yaml]
+
+project:
+  name: farmland_tiles_b5_crop_c1_iksan
+  output_dir: outputs/tiles_segformer_b5_crop_c1_iksan
+
+dataset:
+  root_dir: "../data/farmmap_c1"
+  input_channels: 3
+  channel_indices: [1, 2, 3]
+  # train split 300타일 표본 통계 (R, G, B).
+  mean: [0.2492, 0.235, 0.2271]
+  std: [0.2308, 0.2256, 0.2256]
+
+model:
+  input_channels: 3
