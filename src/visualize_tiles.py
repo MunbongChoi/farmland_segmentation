@@ -44,8 +44,8 @@ def _read_context_window(root: Path, name: str, channels: tuple[int, ...], tile_
     return mosaic[:, low:high, low:high]
 
 
-def _parcel_polygons(interior: np.ndarray, minimum_pixels: int) -> list[np.ndarray]:
-    """Exterior pixel rings of connected interior components, smallest removed."""
+def _parcel_polygons(interior: np.ndarray, minimum_pixels: int) -> tuple[list[tuple[np.ndarray, int]], np.ndarray]:
+    """Exterior pixel rings (with component id) of connected interior components."""
     structure = ndimage.generate_binary_structure(2, 2)
     labels, count = ndimage.label(interior, structure)
     if count:
@@ -54,7 +54,16 @@ def _parcel_polygons(interior: np.ndarray, minimum_pixels: int) -> list[np.ndarr
         small[0] = True
         labels[small[labels]] = 0
     # ponytail: exterior rings only; holes inside a parcel are rare and not drawn.
-    return [np.asarray(geometry["coordinates"][0]) for geometry, _ in shapes(labels.astype(np.int32), mask=labels > 0, connectivity=8)]
+    rings = [(np.asarray(geometry["coordinates"][0]), int(value)) for geometry, value in shapes(labels.astype(np.int32), mask=labels > 0, connectivity=8)]
+    return rings, labels
+
+
+def _component_majority_class(labels: np.ndarray, prediction: np.ndarray, num_classes: int) -> np.ndarray:
+    """Majority prediction class per connected component id."""
+    valid = labels > 0
+    encoded = labels[valid].astype(np.int64) * num_classes + prediction[valid].clip(0, num_classes - 1)
+    counts = np.bincount(encoded, minlength=(int(labels.max()) + 1) * num_classes).reshape(-1, num_classes)
+    return counts.argmax(axis=1)
 
 
 def _draw_outlines(image: np.ndarray, rings: list[np.ndarray], color: tuple[int, int, int]) -> None:
@@ -137,19 +146,30 @@ def main() -> None:
             tiles.append(_title_tile(blend_mask(rgb, compare_prediction), f"Pred B: {Path(args.compare_config).stem}"))
         panel = rgb.copy()
         boundary = int(config.get("inference", {}).get("boundary_class", 2))
-        _draw_outlines(panel, _parcel_polygons((mask > 0) & (mask != boundary), args.min_parcel_pixels), (40, 110, 255))
+        gt_rings, _ = _parcel_polygons((mask > 0) & (mask != boundary), args.min_parcel_pixels)
+        _draw_outlines(panel, [ring for ring, _ in gt_rings], (40, 110, 255))
         legend = ["GT blue"]
         if prediction is not None:
-            predicted_rings = _parcel_polygons((prediction > 0) & (prediction != boundary), args.min_parcel_pixels)
-            _draw_outlines(panel, predicted_rings, (255, 40, 40))
+            predicted_rings, component_labels = _parcel_polygons((prediction > 0) & (prediction != boundary), args.min_parcel_pixels)
+            _draw_outlines(panel, [ring for ring, _ in predicted_rings], (255, 40, 40))
             legend.append("A red")
+            class_names = list(config["dataset"]["class_names"])
+            majority = _component_majority_class(component_labels, prediction, len(class_names))
             with rasterio.open(sample["path"]) as source:
                 if source.crs is not None and not source.transform.is_identity:
-                    for ring in predicted_rings:
-                        vector_records.append({"tile": Path(sample["path"]).stem, "crs": source.crs, "ring": [tuple(source.transform * tuple(point)) for point in ring]})
+                    for ring, component in predicted_rings:
+                        class_id = int(majority[component])
+                        vector_records.append({
+                            "tile": Path(sample["path"]).stem,
+                            "class_id": class_id,
+                            "class_name": class_names[class_id],
+                            "crs": source.crs,
+                            "ring": [tuple(source.transform * tuple(point)) for point in ring],
+                        })
         if compare_prediction is not None:
             compare_boundary = int(compare_config.get("inference", {}).get("boundary_class", 2))
-            _draw_outlines(panel, _parcel_polygons((compare_prediction > 0) & (compare_prediction != compare_boundary), args.min_parcel_pixels), (255, 210, 0))
+            compare_rings, _ = _parcel_polygons((compare_prediction > 0) & (compare_prediction != compare_boundary), args.min_parcel_pixels)
+            _draw_outlines(panel, [ring for ring, _ in compare_rings], (255, 210, 0))
             legend.append("B yellow")
         tiles.append(_title_tile(panel, f"Parcels ({' / '.join(legend)})"))
         rows.append(np.hstack(tiles))
@@ -162,7 +182,11 @@ def main() -> None:
         from shapely.geometry import Polygon
 
         frame = gpd.GeoDataFrame(
-            {"tile": [record["tile"] for record in vector_records]},
+            {
+                "tile": [record["tile"] for record in vector_records],
+                "class_id": [record["class_id"] for record in vector_records],
+                "class_name": [record["class_name"] for record in vector_records],
+            },
             geometry=[Polygon(record["ring"]) for record in vector_records],
             crs=vector_records[0]["crs"],
         )
