@@ -25,12 +25,18 @@ from .utils.visualization import _title_tile, _write_rgb, blend_mask
 def _read_context_window(root: Path, name: str, channels: tuple[int, ...], tile_size: int, margin: int) -> np.ndarray:
     """Read a tile plus ``margin`` pixels of real neighbor-tile context around it."""
     scene, row, col = name.rsplit("_", 2)
+    # make_tiles 이름은 픽셀 오프셋(r08704_c19968), 구 형식은 타일 인덱스(001_002)다.
+    prefixed = row.startswith("r") and col.startswith("c")
+    step = tile_size if prefixed else 1
+    row_value, col_value = int(row.lstrip("r")), int(col.lstrip("c"))
     # Missing neighbors (scene edges) stay zero, matching the no-data black border.
     mosaic = np.zeros((len(channels), tile_size * 3, tile_size * 3), dtype=np.uint8)
     for delta_row in (-1, 0, 1):
         for delta_col in (-1, 0, 1):
-            path = root / "images" / f"{scene}_{int(row) + delta_row:03d}_{int(col) + delta_col:03d}.tif"
-            if not path.is_file():
+            neighbor_row, neighbor_col = row_value + delta_row * step, col_value + delta_col * step
+            stem = f"{scene}_r{neighbor_row:05d}_c{neighbor_col:05d}" if prefixed else f"{scene}_{neighbor_row:03d}_{neighbor_col:03d}"
+            path = root / "images" / f"{stem}.tif"
+            if neighbor_row < 0 or neighbor_col < 0 or not path.is_file():
                 continue
             with rasterio.open(path) as source:
                 mosaic[:, (delta_row + 1) * tile_size : (delta_row + 2) * tile_size, (delta_col + 1) * tile_size : (delta_col + 2) * tile_size] = source.read(channels)
@@ -118,6 +124,8 @@ def main() -> None:
         with rasterio.open(sample["path"]) as source:
             rgb = np.moveaxis(source.read(channels), 0, -1)
         mask = sample["mask"].numpy()
+        # ponytail: ignore(255)는 배경으로 표시 — 해당 픽셀은 영상도 nodata 검정이라 그대로 읽힌다.
+        mask = np.where(mask == 255, 0, mask)
         tiles = [_title_tile(rgb, Path(sample["path"]).stem[-12:]), _title_tile(blend_mask(rgb, mask), "Ground truth")]
         margin = max(0, args.context_margin)
         prediction = compare_prediction = None
