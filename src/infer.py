@@ -285,7 +285,7 @@ def close_parcel_boundaries_from_maps(
     return closed
 
 
-def postprocess_mask(mask: np.ndarray, config: dict[str, Any], transform_value: Affine, crs: CRS | None) -> tuple[np.ndarray, np.ndarray]:
+def postprocess_mask(mask: np.ndarray, config: dict[str, Any], transform_value: Affine, crs: CRS | None, boundary_class: int | None = None) -> tuple[np.ndarray, np.ndarray]:
     """Clean each class and derive per-object connected-component IDs."""
     processed = np.zeros(mask.shape, dtype=np.uint8)
     instances = np.zeros(mask.shape, dtype=np.uint32)
@@ -294,7 +294,8 @@ def postprocess_mask(mask: np.ndarray, config: dict[str, Any], transform_value: 
     structure = ndimage.generate_binary_structure(2, 2)
     for class_id in sorted(int(value) for value in np.unique(mask) if value != 0):
         binary = mask == class_id
-        if config.get("fill_holes", False):
+        # 경계 클래스는 닫힌 고리라서 fill_holes가 필지 내부 전체를 경계로 메워버린다.
+        if config.get("fill_holes", False) and class_id != boundary_class:
             binary = ndimage.binary_fill_holes(binary)
         opening = int(config.get("opening_iterations", 0))
         closing = int(config.get("closing_iterations", 0))
@@ -474,7 +475,7 @@ def run_inference(
             post_input = close_parcel_boundaries_from_maps(argmax_map, interior_map, boundary_map, boundary_class)
     post_config = config.get("postprocess", {})
     if post_config.get("enabled", True):
-        processed, instances = postprocess_mask(post_input, post_config, transform_value, crs)
+        processed, instances = postprocess_mask(post_input, post_config, transform_value, crs, boundary_class)
     else:
         processed, instances = post_input, np.zeros(raw_mask.shape, dtype=np.uint32)
     write_raster(output_path, processed, crs, transform_value, "uint8", 0, CLASS_COLORMAP)

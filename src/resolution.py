@@ -92,6 +92,14 @@ def open_resampled_vrt(
 ) -> tuple[WarpedVRT, RasterGrid]:
     """Open a virtual raster aligned to the requested metre-based resolution."""
     grid = make_target_grid(source_crs, source_transform, source.width, source.height, target_resolution_m, target_crs)
+    if (
+        grid.crs == source_crs
+        and grid.width == source.width
+        and grid.height == source.height
+        and grid.transform.almost_equals(source_transform, precision=1e-9)
+    ):
+        # 이미 목표 격자와 동일하다 — identity warp는 창 읽기마다 순수 오버헤드다.
+        return source, RasterGrid(source_crs, source_transform, source.width, source.height)
     vrt_options: dict[str, Any] = {
         "src_crs": source_crs,
         "src_transform": source_transform,
