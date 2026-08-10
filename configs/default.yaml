@@ -44,6 +44,12 @@ inference:
   auto_reduce_batch: true
   require_georeference: true
   confidence_threshold: 0.5
+  # watershed 경계 닫기 튜닝. 병합(필지 합쳐짐)이 심하면 seed_erosion을 1~2로,
+  # seed_boundary_maximum을 0.08 근처로 낮춰 씨앗을 더 엄격하게 분리한다.
+  watershed_seed_threshold: 0.5
+  watershed_seed_boundary_maximum: 0.15
+  watershed_line_iterations: 1
+  watershed_seed_erosion_iterations: 1
 
 postprocess:
   enabled: true

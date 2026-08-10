@@ -228,6 +228,7 @@ def close_parcel_boundaries(
     seed_threshold: float = 0.5,
     seed_boundary_maximum: float = 0.15,
     line_iterations: int = 1,
+    seed_erosion_iterations: int = 0,
 ) -> np.ndarray:
     """Bridge argmax boundary gaps with watershed lines over the boundary probability.
 
@@ -246,6 +247,7 @@ def close_parcel_boundaries(
         seed_threshold,
         seed_boundary_maximum,
         line_iterations,
+        seed_erosion_iterations,
     )
 
 
@@ -257,6 +259,7 @@ def close_parcel_boundaries_from_maps(
     seed_threshold: float = 0.5,
     seed_boundary_maximum: float = 0.15,
     line_iterations: int = 1,
+    seed_erosion_iterations: int = 0,
 ) -> np.ndarray:
     """Watershed closing from precomputed maps (streaming path needs no full C,H,W array)."""
     try:
@@ -267,6 +270,9 @@ def close_parcel_boundaries_from_maps(
     interior = parcel & (mask != boundary_class)
     structure = ndimage.generate_binary_structure(2, 2)
     seeds = (interior_probability > seed_threshold) & (boundary_probability < seed_boundary_maximum) & parcel
+    if seed_erosion_iterations:
+        # 약한 두렁 위로 이어진 얇은 씨앗 다리를 끊어 인접 필지 병합을 억제한다.
+        seeds = ndimage.binary_erosion(seeds, structure, iterations=seed_erosion_iterations)
     # Every argmax-interior component must own a seed, or it would flood as boundary.
     interior_labels, count = ndimage.label(interior, structure)
     seeded = np.zeros(count + 1, dtype=bool)
@@ -281,6 +287,16 @@ def close_parcel_boundaries_from_maps(
         # 1px watershed lines would be re-bridged by the postprocess 3x3 closing.
         lines = ndimage.binary_dilation(lines, structure, iterations=line_iterations) & parcel
     closed = mask.copy()
+    # 두껍게 예측된 argmax 경계 띠를 각 basin의 다수 내부 클래스로 되돌린다.
+    # 경계는 아래에서 다시 그리는 분수령 선만 남아 폭이 균일해지고 필지 면적이 보존된다.
+    band = parcel & (mask == boundary_class) & (basins > 0)
+    if band.any():
+        num_classes = int(mask.max()) + 1
+        encoded = basins[interior].astype(np.int64) * num_classes + mask[interior]
+        counts = np.bincount(encoded, minlength=(int(basins.max()) + 1) * num_classes).reshape(-1, num_classes)
+        basin_class = counts.argmax(axis=1).astype(np.uint8)
+        basin_class[counts.max(axis=1) == 0] = boundary_class
+        closed[band] = basin_class[basins[band]]
     closed[lines] = boundary_class
     return closed
 
@@ -469,10 +485,16 @@ def run_inference(
     post_input = raw_mask
     if bool(inference.get("close_boundaries", False)):
         # Deliberately rescues sub-threshold ridge pixels; min_area pruning still applies.
+        watershed_options = {
+            "seed_threshold": float(inference.get("watershed_seed_threshold", 0.5)),
+            "seed_boundary_maximum": float(inference.get("watershed_seed_boundary_maximum", 0.15)),
+            "line_iterations": int(inference.get("watershed_line_iterations", 1)),
+            "seed_erosion_iterations": int(inference.get("watershed_seed_erosion_iterations", 0)),
+        }
         if probabilities is not None:
-            post_input = close_parcel_boundaries(probabilities, boundary_class)
+            post_input = close_parcel_boundaries(probabilities, boundary_class, **watershed_options)
         else:
-            post_input = close_parcel_boundaries_from_maps(argmax_map, interior_map, boundary_map, boundary_class)
+            post_input = close_parcel_boundaries_from_maps(argmax_map, interior_map, boundary_map, boundary_class, **watershed_options)
     post_config = config.get("postprocess", {})
     if post_config.get("enabled", True):
         processed, instances = postprocess_mask(post_input, post_config, transform_value, crs, boundary_class)
