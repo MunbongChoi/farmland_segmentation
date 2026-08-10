@@ -31,7 +31,8 @@ evaluation:
 inference:
   tile_size: 512
   overlap: 128
-  batch_size: 8
+  # OOM 시 auto_reduce_batch가 절반씩 자동으로 줄이므로 크게 잡아도 안전하다.
+  batch_size: 32
   # 모델 학습 기준과 동일한 25cm/pixel 격자에서 추론한다.
   target_resolution_m: 0.25
   # 원본이 투영 CRS이면 null로 두어 유지한다. 경위도 입력은 EPSG:5179 등을 지정한다.
