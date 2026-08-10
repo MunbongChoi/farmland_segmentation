@@ -50,6 +50,8 @@ inference:
   watershed_seed_boundary_maximum: 0.15
   watershed_line_iterations: 1
   watershed_seed_erosion_iterations: 1
+  # 경계 클래스를 산출물에서 제거: 경계 픽셀을 이웃 필지로 흡수시켜 필지가 맞닿게 한다.
+  erase_boundary: true
 
 postprocess:
   enabled: true

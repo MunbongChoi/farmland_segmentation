@@ -500,6 +500,24 @@ def run_inference(
         processed, instances = postprocess_mask(post_input, post_config, transform_value, crs, boundary_class)
     else:
         processed, instances = post_input, np.zeros(raw_mask.shape, dtype=np.uint32)
+    if bool(inference.get("erase_boundary", True)):
+        # 경계 클래스는 인스턴스 분리 신호일 뿐 산출물이 아니다 (RGBvsRGBN infer_building의
+        # grow_labels와 동일 원리): 경계 픽셀을 이웃 필지로 흡수시켜 필지끼리 맞닿게 하고,
+        # 흡수되지 못한 잔여 경계는 배경 처리해 마스크/벡터에서 클래스 7을 제거한다.
+        # 모폴로지(closing 등)가 경계를 원래 선 밖으로 넓힐 수 있으므로 양쪽 모두 흡수 대상이다.
+        line = (post_input == boundary_class) | (processed == boundary_class)
+        instances[line] = 0
+        instance_class = np.zeros(int(instances.max()) + 1, dtype=np.uint8)
+        occupied = instances > 0
+        instance_class[instances[occupied]] = processed[occupied]
+        for _ in range(8):
+            grown = ndimage.maximum_filter(instances, 3)
+            update = line & (instances == 0) & (grown > 0)
+            if not update.any():
+                break
+            instances[update] = grown[update]
+            processed[update] = instance_class[instances[update]]
+        processed[line & (instances == 0)] = 0
     write_raster(output_path, processed, crs, transform_value, "uint8", 0, CLASS_COLORMAP)
     if config.get("output", {}).get("save_probability_map", True):
         write_raster(output_path.with_name(f"{output_path.stem}_probability.tif"), probabilities, crs, transform_value, "float32")
