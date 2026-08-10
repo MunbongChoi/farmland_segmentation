@@ -1,0 +1,13 @@
+# 통합 RGB v2: 전주(L3M) + 익산(C1) 밀도 강화판.
+# 익산은 stride 256 겹침 타일링 + min-valid 0.2 가장자리 회수로 train만 늘렸다
+# (겹침 타일은 4km 블록이 전부 train인 위치에서만 뽑아 val/test 누수 없음 — src.make_tiles).
+# root는 src.merge_tile_datasets로 farmmap_jeonju + farmmap_c1_dense를 병합한 것.
+# mean/std는 같은 두 장면의 크롭이므로 v1 통계를 그대로 쓴다.
+_base_: [tiles_b5_crop_rgb.yaml]
+
+project:
+  name: farmland_tiles_b5_crop_rgb_v2
+  output_dir: outputs/tiles_segformer_b5_crop_rgb_v2
+
+dataset:
+  root_dir: "../data/farmmap_rgb_v2"

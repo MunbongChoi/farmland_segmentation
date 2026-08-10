@@ -104,16 +104,24 @@ def sliding_window_predict(
     weight = blending_weight(tile_size, merge)
     mean_array = np.asarray(mean, dtype=np.float32).reshape(-1, 1, 1)
     std_array = np.asarray(std, dtype=np.float32).reshape(-1, 1, 1)
+    processed = 0
     for start in range(0, len(coordinates), batch_size):
         chunk_coordinates = coordinates[start : start + batch_size]
-        tiles = [normalize_tile(read_tile(row, col), mean_array, std_array) for row, col in chunk_coordinates]
+        # 장면 밖 전부-검정 창은 추론 없이 배경(가중치 0)으로 남긴다.
+        kept = [(coordinate, tile) for coordinate in chunk_coordinates if (tile := read_tile(*coordinate)).any()]
+        processed += len(chunk_coordinates)
+        if not kept:
+            continue
+        tiles = [normalize_tile(tile, mean_array, std_array) for _, tile in kept]
         predictions = _infer_tiles(model, tiles, device, batch_size, auto_reduce_batch)
-        for (row, col), prediction in zip(chunk_coordinates, predictions):
+        for ((row, col), _), prediction in zip(kept, predictions):
             valid_height = min(tile_size, height - row)
             valid_width = min(tile_size, width - col)
             local_weight = weight[:valid_height, :valid_width]
             total[:, row : row + valid_height, col : col + valid_width] += prediction[:, :valid_height, :valid_width] * local_weight
             weight_sum[row : row + valid_height, col : col + valid_width] += local_weight
+        if processed % (batch_size * 20) < batch_size:
+            print(f"  추론 {processed}/{len(coordinates)} 창", flush=True)
     return total / np.maximum(weight_sum, 1e-6)[None]
 
 
@@ -152,7 +160,8 @@ def sliding_window_predict_compact(
     weight = blending_weight(tile_size, merge)
     mean_array = np.asarray(mean, dtype=np.float32).reshape(-1, 1, 1)
     std_array = np.asarray(std, dtype=np.float32).reshape(-1, 1, 1)
-    for band_start in range(0, height, band_rows):
+    band_count = (height + band_rows - 1) // band_rows
+    for band_index, band_start in enumerate(range(0, height, band_rows), start=1):
         band_end = min(height, band_start + band_rows)
         band_row_origins = [row for row in row_origins if row + tile_size > band_start and row < band_end]
         buffer_top = min(band_row_origins)
@@ -160,17 +169,24 @@ def sliding_window_predict_compact(
         total = np.zeros((num_classes, buffer_height, width), dtype=np.float32)
         weight_sum = np.zeros((buffer_height, width), dtype=np.float32)
         coordinates = [(row, col) for row in band_row_origins for col in column_origins]
+        skipped = 0
         for start in range(0, len(coordinates), batch_size):
             chunk_coordinates = coordinates[start : start + batch_size]
-            tiles = [normalize_tile(read_tile(row, col), mean_array, std_array) for row, col in chunk_coordinates]
+            # 장면 밖 전부-검정 창은 추론 없이 배경(가중치 0)으로 남긴다.
+            kept = [(coordinate, tile) for coordinate in chunk_coordinates if (tile := read_tile(*coordinate)).any()]
+            skipped += len(chunk_coordinates) - len(kept)
+            if not kept:
+                continue
+            tiles = [normalize_tile(tile, mean_array, std_array) for _, tile in kept]
             predictions = _infer_tiles(model, tiles, device, batch_size, auto_reduce_batch)
-            for (row, col), prediction in zip(chunk_coordinates, predictions):
+            for ((row, col), _), prediction in zip(kept, predictions):
                 valid_height = min(tile_size, height - row)
                 valid_width = min(tile_size, width - col)
                 local_weight = weight[:valid_height, :valid_width]
                 local_row = row - buffer_top
                 total[:, local_row : local_row + valid_height, col : col + valid_width] += prediction[:, :valid_height, :valid_width] * local_weight
                 weight_sum[local_row : local_row + valid_height, col : col + valid_width] += local_weight
+        print(f"  밴드 {band_index}/{band_count} (행 {band_start}-{band_end}): 창 {len(coordinates)}개, 검정 스킵 {skipped}개", flush=True)
         # 밴드 core 행만 축약해 저장한다. 512행 단위로 나눠 임시 확률 복사본을 작게 유지한다.
         for reduce_start in range(band_start, band_end, 512):
             reduce_end = min(band_end, reduce_start + 512)
