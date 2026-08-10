@@ -97,6 +97,8 @@ def main() -> None:
     parser.add_argument("--compare-checkpoint", help="지정하면 두 번째 예측 열을 추가한다")
     parser.add_argument("--split", choices=["train", "val", "test"], default="val")
     parser.add_argument("--count", type=int, default=6)
+    parser.add_argument("--sample-seed", type=int, help="샘플 추첨 시드. 미지정 시 실행마다 다른 타일이 뽑힌다")
+    parser.add_argument("--min-foreground", type=float, default=0.02, help="GT 전경 비율이 이 값 미만인 빈 타일은 건너뛴다")
     parser.add_argument("--context-margin", type=int, default=256, help="이웃 타일에서 가져올 추론 문맥 픽셀. 0이면 타일 단독 추론")
     parser.add_argument("--watershed", action=argparse.BooleanOptionalAction, default=True, help="경계 확률 watershed로 끊긴 필지 경계를 닫는다")
     parser.add_argument("--min-parcel-pixels", type=int, default=50, help="이보다 작은 폴리곤은 잡음으로 버린다")
@@ -107,7 +109,19 @@ def main() -> None:
     config = apply_overrides(load_config(args.config), args.set)
     datasets = dict(zip(("train", "val", "test"), build_datasets(config)))
     dataset = datasets[args.split]
-    indices = random.Random(int(config["project"]["seed"])).sample(range(len(dataset)), min(args.count, len(dataset)))
+    # 빈 타일(GT 전경 없음)을 건너뛰며 무작위로 count개를 모은다. 라벨 파일만 읽어 빠르다.
+    order = list(range(len(dataset)))
+    random.Random(args.sample_seed).shuffle(order)
+    indices: list[int] = []
+    for index in order:
+        with rasterio.open(dataset.root / dataset.label_dir / f"{dataset.tiles[index]}.tif") as label_source:
+            label = label_source.read(1)
+        if ((label > 0) & (label != 255)).mean() >= args.min_foreground:
+            indices.append(index)
+        if len(indices) >= args.count:
+            break
+    if len(indices) < args.count:
+        print(f"전경 조건을 만족하는 타일이 {len(indices)}개뿐입니다 (요청 {args.count})")
 
     model = None
     if args.checkpoint:
