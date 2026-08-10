@@ -117,6 +117,74 @@ def sliding_window_predict(
     return total / np.maximum(weight_sum, 1e-6)[None]
 
 
+def sliding_window_predict_compact(
+    read_tile: Callable[[int, int], np.ndarray],
+    height: int,
+    width: int,
+    model: torch.nn.Module,
+    device: torch.device,
+    num_classes: int,
+    tile_size: int,
+    overlap: int,
+    batch_size: int,
+    mean: list[float],
+    std: list[float],
+    boundary_class: int,
+    merge: str = "hann",
+    auto_reduce_batch: bool = True,
+    band_rows: int = 3072,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Streaming Hann-blended prediction keeping only postprocess-relevant maps.
+
+    Returns ``(argmax uint8, max-probability uint8(x255), interior-sum float16,
+    boundary float16)``. Identical blending to :func:`sliding_window_predict`;
+    bands only bound RAM (~C x band x W instead of C x H x W), and windows
+    spanning band edges are recomputed so every core pixel still receives all
+    of its overlapping-window contributions — no seams.
+    """
+    row_origins = window_origins(height, tile_size, overlap)
+    column_origins = window_origins(width, tile_size, overlap)
+    argmax_map = np.zeros((height, width), dtype=np.uint8)
+    confidence_map = np.zeros((height, width), dtype=np.uint8)
+    interior_map = np.zeros((height, width), dtype=np.float16)
+    boundary_map = np.zeros((height, width), dtype=np.float16)
+    interior_indices = [index for index in range(1, num_classes) if index != boundary_class]
+    weight = blending_weight(tile_size, merge)
+    mean_array = np.asarray(mean, dtype=np.float32).reshape(-1, 1, 1)
+    std_array = np.asarray(std, dtype=np.float32).reshape(-1, 1, 1)
+    for band_start in range(0, height, band_rows):
+        band_end = min(height, band_start + band_rows)
+        band_row_origins = [row for row in row_origins if row + tile_size > band_start and row < band_end]
+        buffer_top = min(band_row_origins)
+        buffer_height = max(band_row_origins) + tile_size - buffer_top
+        total = np.zeros((num_classes, buffer_height, width), dtype=np.float32)
+        weight_sum = np.zeros((buffer_height, width), dtype=np.float32)
+        coordinates = [(row, col) for row in band_row_origins for col in column_origins]
+        for start in range(0, len(coordinates), batch_size):
+            chunk_coordinates = coordinates[start : start + batch_size]
+            tiles = [normalize_tile(read_tile(row, col), mean_array, std_array) for row, col in chunk_coordinates]
+            predictions = _infer_tiles(model, tiles, device, batch_size, auto_reduce_batch)
+            for (row, col), prediction in zip(chunk_coordinates, predictions):
+                valid_height = min(tile_size, height - row)
+                valid_width = min(tile_size, width - col)
+                local_weight = weight[:valid_height, :valid_width]
+                local_row = row - buffer_top
+                total[:, local_row : local_row + valid_height, col : col + valid_width] += prediction[:, :valid_height, :valid_width] * local_weight
+                weight_sum[local_row : local_row + valid_height, col : col + valid_width] += local_weight
+        # 밴드 core 행만 축약해 저장한다. 512행 단위로 나눠 임시 확률 복사본을 작게 유지한다.
+        for reduce_start in range(band_start, band_end, 512):
+            reduce_end = min(band_end, reduce_start + 512)
+            local = slice(reduce_start - buffer_top, reduce_end - buffer_top)
+            probabilities = total[:, local] / np.maximum(weight_sum[local], 1e-6)[None]
+            target = slice(reduce_start, reduce_end)
+            argmax_map[target] = probabilities.argmax(axis=0).astype(np.uint8)
+            confidence_map[target] = np.round(probabilities.max(axis=0) * 255.0).astype(np.uint8)
+            interior_map[target] = probabilities[interior_indices].sum(axis=0).astype(np.float16)
+            boundary_map[target] = probabilities[boundary_class].astype(np.float16)
+        total = weight_sum = None
+    return argmax_map, confidence_map, interior_map, boundary_map
+
+
 def sliding_window_predict_array(
     image: np.ndarray,
     model: torch.nn.Module,
@@ -169,17 +237,36 @@ def close_parcel_boundaries(
     Every non-background class except ``boundary_class`` counts as interior, so
     the same routine serves both the 3-class and crop-class label schemes.
     """
+    interior_indices = [index for index in range(1, probabilities.shape[0]) if index != boundary_class]
+    return close_parcel_boundaries_from_maps(
+        probabilities.argmax(axis=0).astype(np.uint8),
+        probabilities[interior_indices].sum(axis=0),
+        probabilities[boundary_class],
+        boundary_class,
+        seed_threshold,
+        seed_boundary_maximum,
+        line_iterations,
+    )
+
+
+def close_parcel_boundaries_from_maps(
+    mask: np.ndarray,
+    interior_probability: np.ndarray,
+    boundary_probability: np.ndarray,
+    boundary_class: int = 2,
+    seed_threshold: float = 0.5,
+    seed_boundary_maximum: float = 0.15,
+    line_iterations: int = 1,
+) -> np.ndarray:
+    """Watershed closing from precomputed maps (streaming path needs no full C,H,W array)."""
     try:
         from skimage.segmentation import watershed
     except ImportError as error:
         raise RuntimeError("watershed 후처리에는 scikit-image가 필요합니다: pip install scikit-image") from error
-    mask = probabilities.argmax(axis=0).astype(np.uint8)
     parcel = mask > 0
     interior = parcel & (mask != boundary_class)
-    interior_indices = [index for index in range(1, probabilities.shape[0]) if index != boundary_class]
-    interior_probability = probabilities[interior_indices].sum(axis=0)
     structure = ndimage.generate_binary_structure(2, 2)
-    seeds = (interior_probability > seed_threshold) & (probabilities[boundary_class] < seed_boundary_maximum) & parcel
+    seeds = (interior_probability > seed_threshold) & (boundary_probability < seed_boundary_maximum) & parcel
     # Every argmax-interior component must own a seed, or it would flood as boundary.
     interior_labels, count = ndimage.label(interior, structure)
     seeded = np.zeros(count + 1, dtype=bool)
@@ -188,7 +275,7 @@ def close_parcel_boundaries(
     markers, marker_count = ndimage.label(seeds, structure)
     if not marker_count:
         return mask
-    basins = watershed(probabilities[boundary_class], markers, mask=parcel, watershed_line=True)
+    basins = watershed(boundary_probability.astype(np.float32, copy=False), markers, mask=parcel, watershed_line=True)
     lines = parcel & (basins == 0)
     if line_iterations:
         # 1px watershed lines would be re-bridged by the postprocess 3x3 closing.
@@ -355,23 +442,36 @@ def run_inference(
                 tile[:, :window_height, :window_width] = crop
                 return tile
 
-            probabilities = sliding_window_predict(reader, inference_source.height, inference_source.width, model, device, int(dataset["num_classes"]), int(inference["tile_size"]), int(inference["overlap"]), int(inference["batch_size"]), list(dataset["mean"]), list(dataset["std"]), str(inference.get("merge", "hann")), bool(inference.get("auto_reduce_batch", True)))
+            save_probability = bool(config.get("output", {}).get("save_probability_map", True))
+            boundary_class = int(inference.get("boundary_class", 2))
+            common = (inference_source.height, inference_source.width, model, device, int(dataset["num_classes"]), int(inference["tile_size"]), int(inference["overlap"]), int(inference["batch_size"]), list(dataset["mean"]), list(dataset["std"]))
+            if save_probability:
+                # 확률맵 저장이 필요할 때만 전체 C,H,W float32를 유지한다 (~4B*C*H*W RAM).
+                probabilities = sliding_window_predict(reader, *common, str(inference.get("merge", "hann")), bool(inference.get("auto_reduce_batch", True)))
+                argmax_map = probabilities.argmax(0).astype(np.uint8)
+                confidence_ok = probabilities.max(0) >= float(inference.get("confidence_threshold", 0.0))
+                interior_map = boundary_map = None
+            else:
+                probabilities = None
+                argmax_map, confidence_map, interior_map, boundary_map = sliding_window_predict_compact(reader, *common, boundary_class, str(inference.get("merge", "hann")), bool(inference.get("auto_reduce_batch", True)))
+                confidence_ok = confidence_map >= round(float(inference.get("confidence_threshold", 0.0)) * 255.0)
         finally:
             if inference_source is not source:
                 inference_source.close()
     if crs is None:
         raise ValueError("출력 공간정보가 없습니다.")
-    raw_mask = probabilities.argmax(0).astype(np.uint8)
-    confidence_threshold = float(inference.get("confidence_threshold", 0.0))
-    foreground = raw_mask > 0
-    raw_mask[foreground & (probabilities.max(0) < confidence_threshold)] = 0
+    raw_mask = argmax_map.copy()
+    raw_mask[(raw_mask > 0) & ~confidence_ok] = 0
     output_path = Path(output_mask)
     raw_path = output_path.with_name(f"{output_path.stem}_raw{output_path.suffix}")
     write_raster(raw_path, raw_mask, crs, transform_value, "uint8", 0, CLASS_COLORMAP)
     post_input = raw_mask
     if bool(inference.get("close_boundaries", False)):
         # Deliberately rescues sub-threshold ridge pixels; min_area pruning still applies.
-        post_input = close_parcel_boundaries(probabilities, int(inference.get("boundary_class", 2)))
+        if probabilities is not None:
+            post_input = close_parcel_boundaries(probabilities, boundary_class)
+        else:
+            post_input = close_parcel_boundaries_from_maps(argmax_map, interior_map, boundary_map, boundary_class)
     post_config = config.get("postprocess", {})
     if post_config.get("enabled", True):
         processed, instances = postprocess_mask(post_input, post_config, transform_value, crs)
