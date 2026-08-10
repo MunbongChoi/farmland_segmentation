@@ -489,6 +489,9 @@ def run_inference(
             class_names = dataset.get("class_names")
             if class_names:
                 command += ["--class-names", ",".join(str(name) for name in class_names)]
+            simplify = float(config.get("output", {}).get("vector_simplify_m", 0.0))
+            if simplify > 0:
+                command += ["--simplify", str(simplify)]
             subprocess.run(command, check=True)
         except subprocess.CalledProcessError as error:
             raise RuntimeError("벡터 변환에 실패했습니다. GeoPandas/pyogrio 설치와 출력 확장자를 확인하세요.") from error

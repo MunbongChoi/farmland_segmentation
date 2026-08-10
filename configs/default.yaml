@@ -60,6 +60,8 @@ output:
   save_raw_mask: true
   save_postprocessed_mask: true
   save_vector: true
+  # 벡터 외곽선 Douglas-Peucker 단순화 허용 오차(m). 0.5m 픽셀 계단 제거용, 0이면 끔.
+  vector_simplify_m: 1.0
 
 logging:
   wandb: false

@@ -12,7 +12,7 @@ from rasterio.features import shapes
 from shapely.geometry import shape
 
 
-def vectorize(instance_raster: str | Path, class_raster: str | Path, output: str | Path, class_names: list[str] | None = None) -> None:
+def vectorize(instance_raster: str | Path, class_raster: str | Path, output: str | Path, class_names: list[str] | None = None, simplify: float = 0.0) -> None:
     """Convert connected-component IDs to class-attributed polygons."""
     with rasterio.open(instance_raster) as instance_source, rasterio.open(class_raster) as class_source:
         if instance_source.shape != class_source.shape or instance_source.transform != class_source.transform:
@@ -25,10 +25,15 @@ def vectorize(instance_raster: str | Path, class_raster: str | Path, output: str
         records = []
         for geometry, value in shapes(instances, mask=instances > 0, transform=instance_source.transform, connectivity=8):
             geometry_object = shape(geometry)
+            # 클래스 조회는 단순화 전 원본 도형의 대표점으로 해야 안전하다.
             point = geometry_object.representative_point()
             row, col = rasterio.transform.rowcol(instance_source.transform, point.x, point.y)
             row = min(max(row, 0), classes.shape[0] - 1)
             col = min(max(col, 0), classes.shape[1] - 1)
+            if simplify > 0:
+                simplified = geometry_object.simplify(simplify, preserve_topology=True)
+                if not simplified.is_empty:
+                    geometry_object = simplified
             records.append({"instance_id": int(value), "class_id": int(classes[row, col]), "geometry": geometry_object})
         crs = instance_source.crs
     if records:
@@ -59,8 +64,9 @@ def main() -> None:
     parser.add_argument("--classes", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--class-names", help="쉼표로 구분한 클래스 이름 목록 (class_id 순서)")
+    parser.add_argument("--simplify", type=float, default=0.0, help="Douglas-Peucker 허용 오차(m). 0이면 픽셀 계단 그대로")
     args = parser.parse_args()
-    vectorize(args.instances, args.classes, args.output, args.class_names.split(",") if args.class_names else None)
+    vectorize(args.instances, args.classes, args.output, args.class_names.split(",") if args.class_names else None, args.simplify)
 
 
 if __name__ == "__main__":
