@@ -99,7 +99,11 @@ def main() -> None:
     parser.add_argument("--instances", required=True)
     parser.add_argument("--classes", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--class-names", help="쉼표로 구분한 클래스 이름 목록 (class_id 순서)")
+    parser.add_argument(
+        "--class-names",
+        default="배경,논,밭,과수,시설,인삼,비경지,필지 경계",
+        help="쉼표로 구분한 클래스 이름 목록 (class_id 순서). 기본=8클래스 경지구분. 3클래스 결과는 직접 지정",
+    )
     parser.add_argument("--simplify", type=float, default=0.0, help="Douglas-Peucker 허용 오차(m). 0이면 픽셀 계단 그대로")
     parser.add_argument("--smooth", type=float, default=0.0, help="서브픽셀 평활 가우시안 sigma(px). marching squares 등고선 폴리곤화, 1.5 권장. 0=끔")
     args = parser.parse_args()
