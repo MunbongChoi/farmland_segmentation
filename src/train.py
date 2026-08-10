@@ -245,7 +245,9 @@ def main() -> None:
                 save_checkpoint(output / "checkpoints" / "best.pt", model, optimizer, scheduler, scaler, epoch, best_metric, config)
             else:
                 no_improvement += 1
-        stop = torch.tensor(int(no_improvement >= int(settings["early_stopping_patience"])), device=device)
+        # min_epochs 전에는 조기 종료하지 않는다 (best.pt 갱신에는 영향 없음).
+        may_stop = epoch + 1 >= int(settings.get("min_epochs", 0))
+        stop = torch.tensor(int(may_stop and no_improvement >= int(settings["early_stopping_patience"])), device=device)
         if world_size > 1:
             torch.distributed.broadcast(stop, src=0)
         if stop.item():

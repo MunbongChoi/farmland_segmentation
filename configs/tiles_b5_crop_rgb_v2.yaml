@@ -11,3 +11,7 @@ project:
 
 dataset:
   root_dir: "../data/farmmap_rgb_v2"
+
+training:
+  # 100 epoch까지는 early stopping을 막고, 이후에는 patience 15 그대로 적용한다.
+  min_epochs: 100
