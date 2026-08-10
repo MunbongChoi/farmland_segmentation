@@ -13,6 +13,7 @@ import numpy as np
 import rasterio
 import torch
 from rasterio.crs import CRS
+from rasterio.enums import Resampling
 from rasterio.transform import Affine
 from rasterio.windows import Window
 from scipy import ndimage
@@ -356,6 +357,36 @@ def postprocess_mask(mask: np.ndarray, config: dict[str, Any], transform_value: 
     return processed, instances
 
 
+CLOUD_FACTOR = 8  # 구름 탐지 격자 축소 배율 (구름은 큰 덩어리라 조밀할 필요 없다)
+
+
+def detect_cloud_mask(
+    source: Any,
+    channels: tuple[int, ...],
+    pixel_size_m: float,
+    min_brightness: float,
+    min_area_m2: float,
+    dilate_m: float,
+) -> np.ndarray:
+    """Coarse cloud mask: large blobs bright in every band (white), small roofs spared."""
+    coarse_height = -(-source.height // CLOUD_FACTOR)
+    coarse_width = -(-source.width // CLOUD_FACTOR)
+    rgb = source.read(channels[:3], out_shape=(3, coarse_height, coarse_width), resampling=Resampling.average).astype(np.float32)
+    cloud = (rgb.min(axis=0) >= min_brightness) & (rgb.max(axis=0) > 0)
+    structure = ndimage.generate_binary_structure(2, 2)
+    coarse_pixel_area = (pixel_size_m * CLOUD_FACTOR) ** 2
+    labels, count = ndimage.label(cloud, structure)
+    if count:
+        sizes = np.bincount(labels.ravel())
+        keep = sizes >= max(1, round(min_area_m2 / coarse_pixel_area))
+        keep[0] = False
+        cloud = keep[labels]
+    iterations = round(dilate_m / (pixel_size_m * CLOUD_FACTOR))
+    if cloud.any() and iterations > 0:
+        cloud = ndimage.binary_dilation(cloud, structure, iterations=iterations)
+    return cloud
+
+
 # 클래스 표시색 — visualization.DEFAULT_PALETTE와 동일하게 유지한다.
 CLASS_COLORMAP = {
     0: (0, 0, 0, 0),
@@ -475,6 +506,17 @@ def run_inference(
                 tile[:, :window_height, :window_width] = crop
                 return tile
 
+            cloud_coarse = None
+            if bool(inference.get("cloud_mask", False)):
+                cloud_coarse = detect_cloud_mask(
+                    inference_source,
+                    channels,
+                    abs(transform_value.a),
+                    float(inference.get("cloud_min_brightness", 200.0)),
+                    float(inference.get("cloud_min_area_m2", 10000.0)),
+                    float(inference.get("cloud_dilate_m", 20.0)),
+                )
+                logger.info("구름 마스크: %.2f%% (min_brightness=%s)", cloud_coarse.mean() * 100, inference.get("cloud_min_brightness", 200.0))
             save_probability = bool(config.get("output", {}).get("save_probability_map", True))
             boundary_class = int(inference.get("boundary_class", 2))
             common = (inference_source.height, inference_source.width, model, device, int(dataset["num_classes"]), int(inference["tile_size"]), int(inference["overlap"]), int(inference["batch_size"]), list(dataset["mean"]), list(dataset["std"]))
@@ -534,6 +576,12 @@ def run_inference(
             instances[update] = grown[update]
             processed[update] = instance_class[instances[update]]
         processed[line & (instances == 0)] = 0
+    if cloud_coarse is not None and cloud_coarse.any():
+        # 구름 지역은 라벨이 없어 예측이 무의미하다 — 마스크/인스턴스에서 비운다.
+        cloud = np.repeat(np.repeat(cloud_coarse, CLOUD_FACTOR, axis=0), CLOUD_FACTOR, axis=1)[: processed.shape[0], : processed.shape[1]]
+        processed[cloud] = 0
+        instances[cloud] = 0
+        write_raster(output_path.with_name(f"{output_path.stem}_clouds{output_path.suffix}"), cloud.astype(np.uint8), crs, transform_value, "uint8", 0)
     write_raster(output_path, processed, crs, transform_value, "uint8", 0, CLASS_COLORMAP)
     if config.get("output", {}).get("save_probability_map", True):
         write_raster(output_path.with_name(f"{output_path.stem}_probability.tif"), probabilities, crs, transform_value, "float32")
@@ -549,6 +597,9 @@ def run_inference(
             simplify = float(config.get("output", {}).get("vector_simplify_m", 0.0))
             if simplify > 0:
                 command += ["--simplify", str(simplify)]
+            smooth = float(config.get("output", {}).get("vector_smooth_px", 0.0))
+            if smooth > 0:
+                command += ["--smooth", str(smooth)]
             subprocess.run(command, check=True)
         except subprocess.CalledProcessError as error:
             raise RuntimeError("벡터 변환에 실패했습니다. GeoPandas/pyogrio 설치와 출력 확장자를 확인하세요.") from error

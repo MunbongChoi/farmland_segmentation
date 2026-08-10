@@ -85,6 +85,9 @@ def main() -> None:
                     simplify = float(config.get("output", {}).get("vector_simplify_m", 0.0))
                     if simplify > 0:
                         command += ["--simplify", str(simplify)]
+                    smooth = float(config.get("output", {}).get("vector_smooth_px", 0.0))
+                    if smooth > 0:
+                        command += ["--smooth", str(smooth)]
                     subprocess.run(command, check=True)
                 continue
             from .infer import run_inference

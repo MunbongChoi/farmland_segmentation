@@ -52,6 +52,11 @@ inference:
   watershed_seed_erosion_iterations: 1
   # 경계 클래스를 산출물에서 제거: 경계 픽셀을 이웃 필지로 흡수시켜 필지가 맞닿게 한다.
   erase_boundary: true
+  # 구름 지역 예측 제거: 전 밴드가 밝은 큰 덩어리를 구름으로 보고 마스크/폴리곤을 비운다.
+  cloud_mask: false
+  cloud_min_brightness: 200.0   # 0~255 (2~98% 스트레치 기준). 얇은 구름까지 잡으려면 낮춘다
+  cloud_min_area_m2: 10000.0    # 이보다 작은 밝은 덩어리(비닐하우스 지붕 등)는 구름으로 안 봄
+  cloud_dilate_m: 20.0          # 구름 가장자리 여유 폭
 
 postprocess:
   enabled: true
@@ -69,8 +74,10 @@ output:
   save_raw_mask: true
   save_postprocessed_mask: true
   save_vector: true
-  # 벡터 외곽선 Douglas-Peucker 단순화 허용 오차(m). 0.5m 픽셀 계단 제거용, 0이면 끔.
-  vector_simplify_m: 1.0
+  # 서브픽셀 평활: 가우시안 sigma(px) 후 marching squares 등고선 폴리곤화 — 계단 자체를 없앤다.
+  vector_smooth_px: 1.5
+  # 벡터 외곽선 Douglas-Peucker 단순화 허용 오차(m). 평활 후 꼭짓점 수 절감용.
+  vector_simplify_m: 0.5
 
 logging:
   wandb: false
