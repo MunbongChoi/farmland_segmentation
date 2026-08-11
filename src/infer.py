@@ -246,6 +246,7 @@ def close_parcel_boundaries(
     seed_boundary_maximum: float = 0.15,
     line_iterations: int = 1,
     seed_erosion_iterations: int = 0,
+    surface_sigma: float = 0.0,
 ) -> np.ndarray:
     """Bridge argmax boundary gaps with watershed lines over the boundary probability.
 
@@ -265,6 +266,7 @@ def close_parcel_boundaries(
         seed_boundary_maximum,
         line_iterations,
         seed_erosion_iterations,
+        surface_sigma,
     )
 
 
@@ -277,6 +279,7 @@ def close_parcel_boundaries_from_maps(
     seed_boundary_maximum: float = 0.15,
     line_iterations: int = 1,
     seed_erosion_iterations: int = 0,
+    surface_sigma: float = 0.0,
 ) -> np.ndarray:
     """Watershed closing from precomputed maps (streaming path needs no full C,H,W array)."""
     try:
@@ -298,7 +301,11 @@ def close_parcel_boundaries_from_maps(
     markers, marker_count = ndimage.label(seeds, structure)
     if not marker_count:
         return mask
-    basins = watershed(boundary_probability.astype(np.float32, copy=False), markers, mask=parcel, watershed_line=True)
+    surface = boundary_probability.astype(np.float32, copy=False)
+    if surface_sigma > 0:
+        # 확률 능선의 잔떨림을 눌러 watershed 분할선을 곧게 만든다.
+        surface = ndimage.gaussian_filter(surface, surface_sigma)
+    basins = watershed(surface, markers, mask=parcel, watershed_line=True)
     lines = parcel & (basins == 0)
     if line_iterations:
         # 1px watershed lines would be re-bridged by the postprocess 3x3 closing.
@@ -548,6 +555,7 @@ def run_inference(
             "seed_boundary_maximum": float(inference.get("watershed_seed_boundary_maximum", 0.15)),
             "line_iterations": int(inference.get("watershed_line_iterations", 1)),
             "seed_erosion_iterations": int(inference.get("watershed_seed_erosion_iterations", 0)),
+            "surface_sigma": float(inference.get("watershed_surface_sigma", 0.0)),
         }
         if probabilities is not None:
             post_input = close_parcel_boundaries(probabilities, boundary_class, **watershed_options)

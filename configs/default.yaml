@@ -50,6 +50,8 @@ inference:
   watershed_seed_boundary_maximum: 0.15
   watershed_line_iterations: 1
   watershed_seed_erosion_iterations: 1
+  # 경계 확률 표면 평활(px sigma): 분할선의 잔떨림(쭈글거림)을 펴서 곧게 긋는다.
+  watershed_surface_sigma: 1.5
   # 경계 클래스를 산출물에서 제거: 경계 픽셀을 이웃 필지로 흡수시켜 필지가 맞닿게 한다.
   erase_boundary: true
   # 구름 지역 예측 제거: 전 밴드가 밝은 큰 덩어리를 구름으로 보고 마스크/폴리곤을 비운다.
@@ -76,8 +78,8 @@ output:
   save_vector: true
   # 서브픽셀 평활: 가우시안 sigma(px) 후 marching squares 등고선 폴리곤화 — 계단 자체를 없앤다.
   vector_smooth_px: 1.5
-  # 벡터 외곽선 Douglas-Peucker 단순화 허용 오차(m). 평활 후 꼭짓점 수 절감용.
-  vector_simplify_m: 0.5
+  # 벡터 외곽선 Douglas-Peucker 단순화 허용 오차(m). 예측 흔들림(~1-2m)을 직선 현으로 편다.
+  vector_simplify_m: 1.5
 
 logging:
   wandb: false
