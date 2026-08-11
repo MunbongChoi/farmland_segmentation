@@ -58,7 +58,8 @@ def main() -> None:
                 raise SystemExit("--label-image의 크기/Transform이 영상과 다릅니다.")
             (output / args.label_dir).mkdir(parents=True, exist_ok=True)
         scene = Path(args.image).stem.rsplit("_", 1)[0]
-        for row in range(0, source.height - size + 1, stride):
+        row_total = len(range(0, source.height - size + 1, stride))
+        for row_index, row in enumerate(range(0, source.height - size + 1, stride), start=1):
             for col in range(0, source.width - size + 1, stride):
                 on_grid = row % size == 0 and col % size == 0
                 if on_grid:
@@ -88,6 +89,8 @@ def main() -> None:
                     with rasterio.open(output / args.label_dir / f"{name}.tif", "w", **label_profile) as destination:
                         destination.write(label_source.read(window=window))
                 rows.append((name, split))
+            if row_index % 10 == 0 or row_index == row_total:
+                print(f"  행 {row_index}/{row_total} (타일 {len(rows)}개)", flush=True)
     if label_source is not None:
         label_source.close()
     with (output / "manifest.csv").open("w", newline="", encoding="utf-8-sig") as stream:
