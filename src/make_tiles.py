@@ -31,7 +31,8 @@ def main() -> None:
     parser.add_argument("--tile-size", type=int, default=512)
     parser.add_argument("--stride", type=int, help="타일 간격(px). 기본=tile-size(겹침 없음). 작게 주면 겹침 타일 추가")
     parser.add_argument("--min-valid", type=float, default=0.5, help="nodata가 아닌 픽셀 비율 하한")
-    parser.add_argument("--min-foreground", type=float, default=0.0, help="라벨 전경(1~7) 비율 하한 — 미달 타일(순수 배경)은 제외. --label-image 필요")
+    parser.add_argument("--min-foreground", type=float, default=0.0, help="라벨 전경(1~7) 비율 하한. 미달 타일(순수 배경)은 제외. --label-image 필요")
+    parser.add_argument("--scene", help="타일 이름 접두어. 기본=파일명에서 마지막 '_' 뒤 제거. 장면끼리 겹치면 직접 지정")
     parser.add_argument("--block-tiles", type=int, default=8, help="split 블록 한 변의 타일 수 (공간 누수 방지)")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -58,7 +59,7 @@ def main() -> None:
             if label_source.shape != source.shape or label_source.transform != source.transform:
                 raise SystemExit("--label-image의 크기/Transform이 영상과 다릅니다.")
             (output / args.label_dir).mkdir(parents=True, exist_ok=True)
-        scene = Path(args.image).stem.rsplit("_", 1)[0]
+        scene = args.scene or Path(args.image).stem.rsplit("_", 1)[0]
         row_total = len(range(0, source.height - size + 1, stride))
         for row_index, row in enumerate(range(0, source.height - size + 1, stride), start=1):
             for col in range(0, source.width - size + 1, stride):
