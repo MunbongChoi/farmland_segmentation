@@ -31,6 +31,7 @@ def main() -> None:
     parser.add_argument("--tile-size", type=int, default=512)
     parser.add_argument("--stride", type=int, help="타일 간격(px). 기본=tile-size(겹침 없음). 작게 주면 겹침 타일 추가")
     parser.add_argument("--min-valid", type=float, default=0.5, help="nodata가 아닌 픽셀 비율 하한")
+    parser.add_argument("--min-foreground", type=float, default=0.0, help="라벨 전경(1~7) 비율 하한 — 미달 타일(순수 배경)은 제외. --label-image 필요")
     parser.add_argument("--block-tiles", type=int, default=8, help="split 블록 한 변의 타일 수 (공간 누수 방지)")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -78,16 +79,23 @@ def main() -> None:
                 data = source.read(window=window)
                 if (data.max(axis=0) > 0).mean() < args.min_valid:
                     continue
+                label_data = None
+                if label_source is not None:
+                    label_data = label_source.read(window=window)
+                    if args.min_foreground > 0:
+                        foreground = (label_data[0] > 0) & (label_data[0] != 255)
+                        if foreground.mean() < args.min_foreground:
+                            continue
                 name = f"{scene}_r{row:05d}_c{col:05d}"
                 profile = source.profile.copy()
                 profile.update(width=size, height=size, transform=transform(window, source.transform), compress="deflate", tiled=False)
                 with rasterio.open(output / "images" / f"{name}.tif", "w", **profile) as destination:
                     destination.write(data)
-                if label_source is not None:
+                if label_data is not None:
                     label_profile = label_source.profile.copy()
                     label_profile.update(width=size, height=size, transform=transform(window, source.transform), compress="deflate", tiled=False)
                     with rasterio.open(output / args.label_dir / f"{name}.tif", "w", **label_profile) as destination:
-                        destination.write(label_source.read(window=window))
+                        destination.write(label_data)
                 rows.append((name, split))
             if row_index % 10 == 0 or row_index == row_total:
                 print(f"  행 {row_index}/{row_total} (타일 {len(rows)}개)", flush=True)
