@@ -35,7 +35,7 @@ def _smooth_instance_polygon(instances: "np.ndarray", instance_id: int, window: 
     return None if polygon.is_empty else polygon
 
 
-def vectorize(instance_raster: str | Path, class_raster: str | Path, output: str | Path, class_names: list[str] | None = None, simplify: float = 0.0, smooth: float = 0.0) -> None:
+def vectorize(instance_raster: str | Path, class_raster: str | Path, output: str | Path, class_names: list[str] | None = None, simplify: float = 0.0, smooth: float = 0.0, drop_classes: frozenset[int] = frozenset()) -> None:
     """Convert connected-component IDs to class-attributed polygons."""
     with rasterio.open(instance_raster) as instance_source, rasterio.open(class_raster) as class_source:
         if instance_source.shape != class_source.shape or instance_source.transform != class_source.transform:
@@ -59,6 +59,8 @@ def vectorize(instance_raster: str | Path, class_raster: str | Path, output: str
             row, col = rasterio.transform.rowcol(instance_source.transform, point.x, point.y)
             row = min(max(row, 0), classes.shape[0] - 1)
             col = min(max(col, 0), classes.shape[1] - 1)
+            if int(classes[row, col]) in drop_classes:
+                continue  # 경계 등 산출 제외 클래스 — erase_boundary 이전 래스터 재벡터화 안전망
             if smooth > 0 and int(value) in windows:
                 if int(value) in smoothed_ids:
                     continue  # 한 인스턴스가 여러 조각으로 나와도 평활 폴리곤은 한 번만
@@ -106,8 +108,10 @@ def main() -> None:
     )
     parser.add_argument("--simplify", type=float, default=0.0, help="Douglas-Peucker 허용 오차(m). 0이면 픽셀 계단 그대로")
     parser.add_argument("--smooth", type=float, default=0.0, help="서브픽셀 평활 가우시안 sigma(px). marching squares 등고선 폴리곤화, 1.5 권장. 0=끔")
+    parser.add_argument("--drop-classes", default="7", help="폴리곤으로 내보내지 않을 class_id (쉼표 구분). 기본=7(필지 경계). 빈 문자열=전부 유지")
     args = parser.parse_args()
-    vectorize(args.instances, args.classes, args.output, args.class_names.split(",") if args.class_names else None, args.simplify, args.smooth)
+    drop = frozenset(int(value) for value in args.drop_classes.split(",") if value.strip())
+    vectorize(args.instances, args.classes, args.output, args.class_names.split(",") if args.class_names else None, args.simplify, args.smooth, drop)
 
 
 if __name__ == "__main__":
