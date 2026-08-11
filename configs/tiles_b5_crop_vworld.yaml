@@ -1,0 +1,14 @@
+# VWorld 항공영상 전용 학습 (익산 북부 + 남부, 위성 장면 제외).
+# v3의 손실 가중·증강 강화·min_epochs를 상속하고 root/통계만 교체.
+# 주의: 항공 도메인 전용 모델 — 위성(C1/L3M) 영상 추론 시 도메인 갭이 있다.
+_base_: [tiles_b5_crop_rgb_v3.yaml]
+
+project:
+  name: farmland_tiles_b5_crop_vworld
+  output_dir: outputs/tiles_segformer_b5_crop_vworld
+
+dataset:
+  root_dir: "../data/farmmap_vworld"
+  # VWorld 북부 train 300타일 실측 통계 (남부는 같은 항공 도메인).
+  mean: [0.3288, 0.408, 0.3664]
+  std: [0.1778, 0.1402, 0.1277]
