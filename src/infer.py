@@ -6,6 +6,7 @@ import argparse
 import logging
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -542,11 +543,19 @@ def run_inference(
                 inference_source.close()
     if crs is None:
         raise ValueError("출력 공간정보가 없습니다.")
+    stage_started = time.perf_counter()
+
+    def stage(name: str) -> None:
+        nonlocal stage_started
+        logger.info("%s (직전 단계 %.0f초)", name, time.perf_counter() - stage_started)
+        stage_started = time.perf_counter()
+
     raw_mask = argmax_map.copy()
     raw_mask[(raw_mask > 0) & ~confidence_ok] = 0
     output_path = Path(output_mask)
     raw_path = output_path.with_name(f"{output_path.stem}_raw{output_path.suffix}")
     write_raster(raw_path, raw_mask, crs, transform_value, "uint8", 0, CLASS_COLORMAP)
+    stage("원시 마스크 저장 완료 → watershed 경계 닫기 시작 (이 단계가 가장 오래 걸린다)")
     post_input = raw_mask
     if bool(inference.get("close_boundaries", False)):
         # Deliberately rescues sub-threshold ridge pixels; min_area pruning still applies.
@@ -561,11 +570,13 @@ def run_inference(
             post_input = close_parcel_boundaries(probabilities, boundary_class, **watershed_options)
         else:
             post_input = close_parcel_boundaries_from_maps(argmax_map, interior_map, boundary_map, boundary_class, **watershed_options)
+    stage("경계 닫기 완료 → 클래스별 모폴로지 후처리 시작")
     post_config = config.get("postprocess", {})
     if post_config.get("enabled", True):
         processed, instances = postprocess_mask(post_input, post_config, transform_value, crs, boundary_class)
     else:
         processed, instances = post_input, np.zeros(raw_mask.shape, dtype=np.uint32)
+    stage("모폴로지 후처리 완료 → 경계 흡수/저장/벡터화 시작")
     if bool(inference.get("erase_boundary", True)):
         # 경계 클래스는 인스턴스 분리 신호일 뿐 산출물이 아니다 (RGBvsRGBN infer_building의
         # grow_labels와 동일 원리): 경계 픽셀을 이웃 필지로 흡수시켜 필지끼리 맞닿게 하고,
@@ -608,9 +619,11 @@ def run_inference(
             smooth = float(config.get("output", {}).get("vector_smooth_px", 0.0))
             if smooth > 0:
                 command += ["--smooth", str(smooth)]
+            stage("래스터 저장 완료 → 폴리곤화(vectorize) 시작")
             subprocess.run(command, check=True)
         except subprocess.CalledProcessError as error:
             raise RuntimeError("벡터 변환에 실패했습니다. GeoPandas/pyogrio 설치와 출력 확장자를 확인하세요.") from error
+    stage("완료")
     logger.info("추론 완료: raw=%s postprocessed=%s", raw_path, output_path)
 
 
