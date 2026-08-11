@@ -13,7 +13,11 @@ from rasterio.windows import Window, transform
 
 
 def block_split(block_row: int, block_col: int, seed: int) -> str:
-    """Assign a spatial block to a split (80/10/10, deterministic)."""
+    """Assign a spatial block to a split (80/10/10, deterministic).
+
+    블록 좌표는 EPSG:5179 절대좌표 기준(world // block_size)이어야 한다 — 장면이
+    겹칠 때 같은 땅이 장면마다 다른 split에 가는 누수를 막는다.
+    """
     value = int(hashlib.md5(f"{seed}:{block_row}:{block_col}".encode()).hexdigest(), 16) % 10
     return "train" if value < 8 else "val" if value == 8 else "test"
 
@@ -37,10 +41,17 @@ def main() -> None:
     stride = args.stride or size
     if not 0 < stride <= size:
         raise SystemExit("stride는 1 이상 tile-size 이하여야 합니다.")
-    block_px = size * args.block_tiles
     rows: list[tuple[str, str]] = []
     label_source = None
     with rasterio.open(args.image) as source:
+        pixel = abs(source.transform.a)
+        block_metres = size * args.block_tiles * pixel
+        origin_x, origin_y = source.transform.c, source.transform.f
+
+        def world_block(row_px: int, col_px: int) -> tuple[int, int]:
+            """타일 원점 픽셀 → EPSG:5179 절대좌표 4km 블록 인덱스."""
+            return int((origin_y - row_px * pixel) // block_metres), int((origin_x + col_px * pixel) // block_metres)
+
         if args.label_image:
             label_source = rasterio.open(args.label_image)
             if label_source.shape != source.shape or label_source.transform != source.transform:
@@ -51,11 +62,11 @@ def main() -> None:
             for col in range(0, source.width - size + 1, stride):
                 on_grid = row % size == 0 and col % size == 0
                 if on_grid:
-                    split = block_split(row // block_px, col // block_px, args.seed)
+                    split = block_split(*world_block(row, col), args.seed)
                 else:
                     # 겹침 타일이 val/test 블록에 걸치면 공간 누수가 생기므로 train 블록 내부에서만 뽑는다.
                     corner_splits = {
-                        block_split(edge_row // block_px, edge_col // block_px, args.seed)
+                        block_split(*world_block(edge_row, edge_col), args.seed)
                         for edge_row in (row, row + size - 1)
                         for edge_col in (col, col + size - 1)
                     }

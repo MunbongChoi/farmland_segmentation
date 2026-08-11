@@ -1,0 +1,14 @@
+# 익산 3장면 통합 (C1 위성 8월 + VWorld 항공 북부 + VWorld 항공 남부) 8클래스 학습.
+# 전주 장면은 제외. v3의 손실 가중·증강 강화를 상속하고 root/통계만 교체.
+# split은 EPSG:5179 절대좌표 4km 블록 기준 — 장면이 겹쳐도 같은 땅은 같은 split (누수 방지).
+_base_: [tiles_b5_crop_rgb_v3.yaml]
+
+project:
+  name: farmland_tiles_b5_crop_rgb_v4
+  output_dir: outputs/tiles_segformer_b5_crop_rgb_v4
+
+dataset:
+  root_dir: "../data/farmmap_rgb_v4"
+  # 장면별 실측 통계의 타일수 가중 결합 (C1 8,641 + 항공 ~39,000 예상).
+  mean: [0.3144, 0.3766, 0.3412]
+  std: [0.1909, 0.1726, 0.1594]
