@@ -1,0 +1,30 @@
+# v2(전주+익산 밀도강화)에서 과적합 대응판: 클래스 가중 + 경계 손실 강화 + 증강 강화.
+# v2 학습이 train 0.42 / val 1.62 (4배 격차, mIoU 0.32 정체)로 과적합 확인됨.
+_base_: [tiles_b5_crop_rgb_v2.yaml]
+
+project:
+  name: farmland_tiles_b5_crop_rgb_v3
+  output_dir: outputs/tiles_segformer_b5_crop_rgb_v3
+
+loss:
+  weights:
+    cross_entropy: 1.0
+    dice: 1.0
+    # 얇은 경계의 학습 신호 강화 (기존 0.1)
+    boundary: 0.3
+  # 픽셀 빈도 역제곱근(논=1 기준, 상한 4): 배경,논,밭,과수,시설,인삼,비경지,경계
+  # 인삼(5)은 표본이 없어 값이 무의미하다 — 1.0 자리표시.
+  class_weights: [0.75, 1.0, 1.6, 4.0, 4.0, 1.0, 4.0, 2.5]
+
+augmentation:
+  # 겹침 타일(4배 중복) 과적합 대응: 색·밝기·스케일 변형을 강화해 중복 크롭을 이질화한다.
+  horizontal_flip: 0.5
+  vertical_flip: 0.5
+  rotate_90: 0.5
+  random_crop: true
+  brightness_contrast: 0.5
+  gaussian_noise: 0.25
+  blur: 0.15
+  color_jitter: 0.4
+  random_scale: 0.3
+  scale_limit: 0.25
