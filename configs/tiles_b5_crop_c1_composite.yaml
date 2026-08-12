@@ -1,0 +1,17 @@
+# C1 구름대체 합성본(2025-08-24 기반, 구름은 03-17 장면으로 대체, 눈 제외) 단독 학습.
+# 라벨 없는 순수 배경 타일은 타일 생성 단계(min-foreground 0.01)에서 이미 제외됨.
+# v3의 손실 가중·경계 0.3·증강 강화를 상속하되, min_epochs 강제는 끈다 (patience 15만 적용).
+_base_: [tiles_b5_crop_rgb_v3.yaml]
+
+project:
+  name: farmland_tiles_b5_crop_c1_composite
+  output_dir: outputs/tiles_segformer_b5_crop_c1_composite
+
+dataset:
+  root_dir: "../data/farmmap_c1_composite"
+  # train 300타일 실측 통계 (R, G, B).
+  mean: [0.193, 0.1802, 0.1653]
+  std: [0.154, 0.1412, 0.1364]
+
+training:
+  min_epochs: 0
