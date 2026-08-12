@@ -103,6 +103,9 @@ def main() -> None:
     with rasterio.open(output, "w", **profile) as dataset:
         dataset.write(destination)
     print(f"{output} ({width}x{height} @ {args.resolution}m, 수신 {fetched}/{columns * rows})")
+    
+    
+    
 
 
 if __name__ == "__main__":

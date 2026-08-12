@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 import os
 import sys
 import time
@@ -116,7 +117,14 @@ def train_epoch(
     optimizer.zero_grad(set_to_none=True)
     accumulation = int(settings["gradient_accumulation_steps"])
     mixed = bool(settings["mixed_precision"]) and device.type == "cuda"
+    amp_dtype = torch.float16
+    if str(settings.get("amp_dtype", "float16")).lower() in {"bfloat16", "bf16"}:
+        if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+            amp_dtype = torch.bfloat16
+        else:
+            logging.getLogger(__name__).warning("bf16 미지원 GPU — fp16 autocast로 진행합니다.")
     total = torch.zeros(2, dtype=torch.float64, device=device)
+    skipped = 0
     progress = tqdm_progress(loader, desc="train", leave=False, disable=not show_progress) if tqdm_progress else loader
     for step, batch in enumerate(progress):
         images = batch["image"].to(device, non_blocking=True)
@@ -124,12 +132,18 @@ def train_epoch(
         should_step = (step + 1) % accumulation == 0 or step + 1 == len(loader)
         synchronization = model.no_sync() if hasattr(model, "no_sync") and not should_step else nullcontext()
         with synchronization:
-            with torch.autocast(device_type=device.type, enabled=mixed):
+            with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=mixed):
                 logits = model(images)
                 raw_loss, _ = criterion(logits, masks)
                 loss = raw_loss / accumulation
-            if not torch.isfinite(loss):
-                raise FloatingPointError(f"NaN/Inf loss가 발생했습니다: step={step}")
+            finite = bool(torch.isfinite(raw_loss))
+            if not finite:
+                # AMP 오버플로 등 일시적 NaN — 각 rank가 backward를 건너뛰면 DDP 집단연산이
+                # 어긋나므로, 0-손실로 대체해 정렬을 유지한 채 이 배치의 기여만 무효화한다.
+                skipped += 1
+                if skipped > max(10, len(loader) // 100):
+                    raise FloatingPointError(f"NaN/Inf loss가 과도하게 반복됩니다: {skipped}회 (step={step})")
+                loss = logits.sum() * 0.0
             scaler.scale(loss).backward()
         if should_step:
             scaler.unscale_(optimizer)
@@ -139,9 +153,10 @@ def train_epoch(
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
-        total += torch.tensor([float(raw_loss.detach()) * images.shape[0], images.shape[0]], device=device)
+        if finite:
+            total += torch.tensor([float(raw_loss.detach()) * images.shape[0], images.shape[0]], device=device)
         if show_progress and tqdm_progress is not None:
-            progress.set_postfix(loss=f"{float(raw_loss.detach()):.4f}")
+            progress.set_postfix(loss=f"{float(raw_loss.detach()):.4f}", skipped=skipped)
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         torch.distributed.all_reduce(total)
     return float(total[0] / total[1].clamp_min(1))
