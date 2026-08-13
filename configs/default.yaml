@@ -54,6 +54,8 @@ inference:
   watershed_seed_erosion_iterations: 1
   # 경계 확률 표면 평활(px sigma): 분할선의 잔떨림(쭈글거림)을 펴서 곧게 긋는다.
   watershed_surface_sigma: 1.5
+  # 분수령 계산 축소 배율: 2면 1m 격자에서 계산해 ~4배 가속 (선 위치 오차 ±0.5m, 흡수돼 무시 수준).
+  watershed_downscale: 2
   # 경계 클래스를 산출물에서 제거: 경계 픽셀을 이웃 필지로 흡수시켜 필지가 맞닿게 한다.
   erase_boundary: true
   # 구름 지역 예측 제거: 전 밴드가 밝은 큰 덩어리를 구름으로 보고 마스크/폴리곤을 비운다.

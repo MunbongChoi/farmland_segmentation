@@ -248,6 +248,7 @@ def close_parcel_boundaries(
     line_iterations: int = 1,
     seed_erosion_iterations: int = 0,
     surface_sigma: float = 0.0,
+    downscale: int = 1,
 ) -> np.ndarray:
     """Bridge argmax boundary gaps with watershed lines over the boundary probability.
 
@@ -268,6 +269,7 @@ def close_parcel_boundaries(
         line_iterations,
         seed_erosion_iterations,
         surface_sigma,
+        downscale,
     )
 
 
@@ -281,8 +283,14 @@ def close_parcel_boundaries_from_maps(
     line_iterations: int = 1,
     seed_erosion_iterations: int = 0,
     surface_sigma: float = 0.0,
+    downscale: int = 1,
 ) -> np.ndarray:
-    """Watershed closing from precomputed maps (streaming path needs no full C,H,W array)."""
+    """Watershed closing from precomputed maps (streaming path needs no full C,H,W array).
+
+    ``downscale`` > 1이면 분수령 계산(씨앗·라벨·침수)을 축소 격자에서 수행해
+    가장 비싼 단계를 ~downscale² 배 가속한다. 분할선 위치 오차는 ±downscale/2 px이고,
+    선은 어차피 팽창 후 erase_boundary가 필지로 흡수하므로 최종 폴리곤 영향은 미미하다.
+    """
     try:
         from skimage.segmentation import watershed
     except ImportError as error:
@@ -290,23 +298,31 @@ def close_parcel_boundaries_from_maps(
     parcel = mask > 0
     interior = parcel & (mask != boundary_class)
     structure = ndimage.generate_binary_structure(2, 2)
-    seeds = (interior_probability > seed_threshold) & (boundary_probability < seed_boundary_maximum) & parcel
+    step = max(1, int(downscale))
+    mask_s = mask[::step, ::step] if step > 1 else mask
+    parcel_s = mask_s > 0
+    interior_s = parcel_s & (mask_s != boundary_class)
+    interior_probability_s = interior_probability[::step, ::step] if step > 1 else interior_probability
+    boundary_probability_s = boundary_probability[::step, ::step] if step > 1 else boundary_probability
+    seeds = (interior_probability_s > seed_threshold) & (boundary_probability_s < seed_boundary_maximum) & parcel_s
     if seed_erosion_iterations:
         # 약한 두렁 위로 이어진 얇은 씨앗 다리를 끊어 인접 필지 병합을 억제한다.
         seeds = ndimage.binary_erosion(seeds, structure, iterations=seed_erosion_iterations)
     # Every argmax-interior component must own a seed, or it would flood as boundary.
-    interior_labels, count = ndimage.label(interior, structure)
+    interior_labels, count = ndimage.label(interior_s, structure)
     seeded = np.zeros(count + 1, dtype=bool)
     seeded[interior_labels[seeds]] = True
     seeds |= (interior_labels > 0) & ~seeded[interior_labels]
     markers, marker_count = ndimage.label(seeds, structure)
     if not marker_count:
         return mask
-    surface = boundary_probability.astype(np.float32, copy=False)
+    surface = boundary_probability_s.astype(np.float32, copy=False)
     if surface_sigma > 0:
         # 확률 능선의 잔떨림을 눌러 watershed 분할선을 곧게 만든다.
-        surface = ndimage.gaussian_filter(surface, surface_sigma)
-    basins = watershed(surface, markers, mask=parcel, watershed_line=True)
+        surface = ndimage.gaussian_filter(surface, max(0.5, surface_sigma / step))
+    basins = watershed(surface, markers, mask=parcel_s, watershed_line=True)
+    if step > 1:
+        basins = np.repeat(np.repeat(basins, step, axis=0), step, axis=1)[: mask.shape[0], : mask.shape[1]]
     lines = parcel & (basins == 0)
     if line_iterations:
         # 1px watershed lines would be re-bridged by the postprocess 3x3 closing.
@@ -565,6 +581,7 @@ def run_inference(
             "line_iterations": int(inference.get("watershed_line_iterations", 1)),
             "seed_erosion_iterations": int(inference.get("watershed_seed_erosion_iterations", 0)),
             "surface_sigma": float(inference.get("watershed_surface_sigma", 0.0)),
+            "downscale": int(inference.get("watershed_downscale", 1)),
         }
         if probabilities is not None:
             post_input = close_parcel_boundaries(probabilities, boundary_class, **watershed_options)
