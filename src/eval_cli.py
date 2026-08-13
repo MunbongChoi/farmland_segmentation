@@ -33,6 +33,8 @@ def run_cli(split: str) -> None:
     _, validation, test = build_datasets(config)
     dataset = validation if split == "validation" else test
     loader = DataLoader(dataset, batch_size=int(config["training"]["validation_batch_size"]), shuffle=False, num_workers=int(config["training"]["num_workers"]))
+    # 체크포인트가 전 가중치를 덮어쓰므로 사전학습(HF Hub) 로드는 생략한다.
+    config["model"]["pretrained"] = False
     model = build_model(config).to(device)
     load_checkpoint(args.checkpoint, model, current_config=config, map_location=device)
     criterion = CompositeSegmentationLoss(config["loss"], int(config["dataset"]["num_classes"]), int(config["dataset"]["ignore_index"])).to(device)

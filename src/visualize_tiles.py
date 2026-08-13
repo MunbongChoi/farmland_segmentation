@@ -126,7 +126,8 @@ def main() -> None:
     model = None
     if args.checkpoint:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = build_model(config).to(device).eval()
+        # 체크포인트가 전 가중치를 덮어쓰므로 사전학습(HF Hub) 로드는 생략한다.
+        model = build_model({**config, "model": {**config["model"], "pretrained": False}}).to(device).eval()
         load_checkpoint(args.checkpoint, model, current_config=config, map_location=device)
 
     if bool(args.compare_config) != bool(args.compare_checkpoint):
@@ -136,7 +137,7 @@ def main() -> None:
         compare_config = apply_overrides(load_config(args.compare_config), args.set)
         compare_dataset = dict(zip(("train", "val", "test"), build_datasets(compare_config)))[args.split]
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        compare_model = build_model(compare_config).to(device).eval()
+        compare_model = build_model({**compare_config, "model": {**compare_config["model"], "pretrained": False}}).to(device).eval()
         load_checkpoint(args.compare_checkpoint, compare_model, current_config=compare_config, map_location=device)
 
     channels = tuple(int(value) for value in config["dataset"]["channel_indices"][:3])

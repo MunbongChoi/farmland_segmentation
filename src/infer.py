@@ -443,6 +443,8 @@ def load_inference_model(
 ) -> tuple[torch.nn.Module, torch.device]:
     """Load one checkpoint for reuse across one or many inference rasters."""
     selected_device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # 체크포인트가 전 가중치를 덮어쓰므로 사전학습(HF Hub) 로드는 생략한다 — 다운로드/경고 제거.
+    config = {**config, "model": {**config["model"], "pretrained": False}}
     model = build_model(config).to(selected_device)
     load_checkpoint(checkpoint, model, current_config=config, map_location=selected_device)
     model.eval()
