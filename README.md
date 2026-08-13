@@ -1,287 +1,192 @@
-# 논·밭 SegFormer/U-Net GeoTIFF Segmentation
+# 팜맵 경지구분 세그멘테이션 (farmland_segmentation)
 
-항공 RGB GeoTIFF에서 논과 밭을 분할하는 PyTorch 파이프라인이다. 기본 모델은 ImageNet/ADE20K 사전학습 B4 encoder를 사용하는 SegFormer이며 U-Net도 선택할 수 있다. 데이터 검증, 통계/타일 전처리, 학습, 검증, 테스트, sliding-window 추론, 형태학적 후처리, 인스턴스 연결요소 생성 및 GIS 벡터 출력을 독립 CLI로 제공한다.
+국토위성(CAS500) / VWorld 항공 정사영상에서 팜맵 경지구분 8클래스를 분할하는 PyTorch 파이프라인.
+SegFormer-B5 기반이며, 데이터 구축 → 학습 → 평가 → 전체 장면 추론 → GIS 벡터 출력을 독립 CLI로 제공한다.
 
-## 확인된 데이터 계약
+## 클래스 체계
 
-- 학습 입력: 논/밭 구분 라벨이 있는 3밴드 RGB 512×512 항공사진
-- 라벨 입력: 기존 `항공사진_FGT_512픽셀_Json/*.json` 폴리곤의 `ANN_CD 50=논`, `60=밭`
-- 논/밭 feature가 하나도 없는 JSON은 데이터셋 인덱스에서 제외하며, 다른 토지피복 polygon은 배경으로 처리
-- 모델 출력: `0=배경`, `1=논`, `2=밭`의 3개 logits
-- 라벨 CRS: EPSG:5186, 512/1024 항공사진 해상도 0.25 m
-- 원천 TIF에는 CRS/Transform이 없으므로 기존 `_META.json`의 EPSG, 좌상단 픽셀 중심 좌표, 해상도로 격자를 구성하고 기존 GeoJSON polygon을 직접 rasterize한다. 독립 추론에는 `--reference-meta`가 필요하다.
-- 기존 JSON polygon은 학습 시 `배경/논/밭` semantic mask로 메모리에서 rasterize된다. 추론의 `instances.tif`는 클래스별 경계 침식 후 connected components로 만든 파생 인스턴스다.
-- 별도 1024 자료는 `90=농경지`까지만 표시되어 논/밭을 구분하지 못한다. 이를 배경으로 잘못 학습시키지 않도록 기본 설정에서 제외했다. 학습된 모델의 sliding-window 추론은 1024 이상 임의 크기를 지원한다.
+| 값 | 클래스 | 출처 | 비고 |
+|---|---|---|---|
+| 0 | 배경 | 팜맵 필지 없음 | 폴리곤화 안 됨 |
+| 1 | 논 | CLSF_CD 01 | |
+| 2 | 밭 | CLSF_CD 02 | |
+| 3 | 과수 | CLSF_CD 03 | |
+| 4 | 시설 | CLSF_CD 04 | 비닐하우스 등 |
+| 5 | 인삼 | CLSF_CD 05 | 익산 데이터엔 표본 없음 |
+| 6 | 비경지 | CLSF_CD 06 | |
+| 7 | 필지 경계 | 래스터화 시 인접 필지 에지 | 분리 신호 전용, 최종 산출물에서 제거 |
+| 255 | ignore | nodata·구름 | 손실/평가 제외 |
 
-제곱미터 면적 필터는 투영 CRS가 확인된 경우에만 실행된다. EPSG:4326이나 EPSG:3857에서 권위 있는 면적을 계산하지 않는다.
+## 요구사항
 
-## 구조
+- Python 3.11, PyTorch(CUDA), rasterio, geopandas, scipy, scikit-image, transformers
+- 팜맵 shapefile (시군별, EPSG:5179, `CLSF_CD` 속성)
+- 영상: 아래 셋 중 하나
+  - 국토위성 L2G/L3M 단일밴드 → `src.stack_bands`로 병합
+  - VWorld 항공 → `src.fetch_vworld`로 다운로드 (API 키 필요)
+  - 이미 georeferenced된 RGB GeoTIFF (EPSG:5179, 0.5m 권장)
 
-```text
-configs/                 데이터, 모델, 실행 설정
-src/datasets/            영상-기존 JSON/Meta 매칭, polygon rasterization, 동기 증강
-src/metrics/             confusion matrix 기반 평가
-src/utils/               설정, 로그, seed, checkpoint, 시각화
-src/model.py             SegFormer 어댑터, U-Net 및 모델 팩토리
-src/train.py             CPU/단일 GPU/DDP 학습
-src/validate.py          validation 평가
-src/test.py              고정 seed로 분리한 test 평가
-src/infer.py             GeoTIFF sliding-window 추론 및 GIS 출력
-src/infer_visualize.py   추론 실행, 공간 정합 검증 및 PNG 결과 시각화
-src/vectorize.py         추론 프로세스와 격리된 래스터 polygonization
-src/validate_data.py     데이터 품질/공간정보 보고서
-src/prepare_data.py      통계 계산과 선택적 물리 타일 생성
-src/split_data.py        이동 없는 분할 manifest 생성
-tests/                   단위/스모크 테스트
-outputs/                 checkpoint, log, metric, prediction
-```
+## 1. 데이터 구축
 
-## 설치
-
-Python 3.11과 CUDA 12.1 조합:
+### 1-1. 영상 준비
 
 ```bash
-conda env create -f environment.yml
-conda activate farmland-segmentation
+# (a) 국토위성 단일밴드 병합 — Aux.xml의 모서리 좌표로 원점 지정
+python -m src.stack_bands --red R.tif --green G.tif --blue B.tif \
+    --output scene_RGB.tif --resolution 0.5 --crs EPSG:5179 --origin <X> <Y>
+
+# (b) VWorld 항공영상 다운로드 (z18 ≈ 0.5m)
+python -m src.fetch_vworld --key <VWorld_API_키> \
+    --bbox <XMIN> <YMIN> <XMAX> <YMAX> --output scene_RGB.tif
 ```
 
-pip 환경에서는 CUDA 12.1 PyTorch를 먼저 설치한다.
+원점이 불확실한 위성 장면은 팜맵 경계×영상 에지 상관 매칭으로 복원한다
+(과거 전주 L3M: 자리표시자 원점 → (954676.5, 1767453.0) 복원 사례 참고).
+
+### 1-2. 팜맵 GT 래스터 (장면 전체)
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu121
-python -m pip install -r requirements.txt
+python -m src.make_scene_label \
+    --image scene_RGB.tif \
+    --farmmap 팜맵_시군A.shp 팜맵_시군B.shp \
+    --output scene_GT.tif --nodata-ignore 0
+# 장면과 겹치는 모든 시군 shapefile을 나열할 것 (접경부 누락 방지)
+# --nodata-ignore 0: 영상 nodata 픽셀을 255(ignore)로 마스킹
 ```
 
-진행률 표시용 `tqdm`은 선택 의존성이다. 설치되지 않아도 학습은 실행되며 진행 막대만 비활성화된다.
-
-CPU 검증 환경은 PyTorch CPU wheel을 설치한 뒤 동일한 `requirements.txt`를 사용한다.
+### 1-3. 타일 + manifest 생성
 
 ```bash
-python -m pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cpu
-python -m pip install -r requirements.txt
+python -m src.make_tiles \
+    --image scene_RGB.tif --label-image scene_GT.tif \
+    --output ../data/<데이터셋이름> \
+    --scene <장면접두어> --stride 256 --min-valid 0.2 --min-foreground 0.01
 ```
 
-## 데이터 배치
+- `--stride 256`: 512px 타일을 절반 겹침으로 생성 (train만 증가, val/test는 원본 격자)
+- `--min-foreground 0.01`: 라벨 전경 1% 미만(순수 배경) 타일 제외
+- `--scene`: 타일 이름 접두어. **여러 장면을 병합할 계획이면 반드시 서로 다르게 지정**
+- split은 EPSG:5179 절대좌표 4km 블록 기준 80/10/10 — 장면이 겹쳐도 같은 땅은 같은 split (누수 방지)
 
-기본 설정은 현재 저장소의 다음 폴더를 직접 읽는다.
-
-```text
-../data/01.데이터/1.Training/원천데이터/TS_항공사진_FGT_512픽셀
-../data/01.데이터/1.Training/라벨링데이터/항공사진_FGT_512픽셀_Json
-../data/01.데이터/1.Training/라벨링데이터/항공사진_FGT_512픽셀_Meta
-../data/01.데이터/2.Validation/원천데이터/VS_항공사진_FGT_512픽셀
-../data/01.데이터/2.Validation/라벨링데이터/항공사진_FGT_512픽셀_Json
-../data/01.데이터/2.Validation/라벨링데이터/항공사진_FGT_512픽셀_Meta
-```
-
-Training은 그대로 사용하고, 제공 Validation은 seed 42로 validation/test에 50:50 분리한다. 파일을 복사하거나 이동하지 않는다.
-
-## 데이터 검증과 준비
-
-빠른 표본 검사 후 전체 검사를 수행한다.
+### 1-4. (선택) 여러 장면 병합 / 사후 필터
 
 ```bash
-python -m src.validate_data --config configs/default.yaml --split train --max-samples 100
-python -m src.validate_data --config configs/default.yaml --split train
-python -m src.validate_data --config configs/default.yaml --split validation
-python -m src.split_data --config configs/default.yaml
-python -m src.prepare_data --config configs/default.yaml --max-samples 1000
+# hardlink 병합 (디스크 추가 사용 없음). 이름 충돌 시 에러로 멈춤
+python -m src.merge_tile_datasets --roots rootA rootB --output ../data/merged
+
+# 이미 만든 데이터셋에서 배경 타일 제외 (manifest만 수정, 원본은 manifest_full.csv 백업)
+python -m src.filter_manifest --root ../data/merged --min-foreground 0.01
 ```
 
-실제 파일로 공간정보가 유지된 512 타일을 물리적으로 만들려면 다음을 사용한다. 배경 비율 단위는 0~1이다.
+### 1-5. (선택) 구름 처리
+
+- 학습: 구름 픽셀을 GT에서 255로 마킹 (`src.infer.detect_cloud_mask` 참고 — 전 밴드 밝은 큰 덩어리 탐지)
+- 추론: config `inference.cloud_mask: true`로 구름 지역 예측 자동 제거
+- 또는 다른 날짜 장면으로 구름을 대체한 합성 영상 사용 (현재 운용 방식)
+
+## 2. 학습
+
+config는 `_base_` 상속 구조다. 새 데이터셋 config는 기존 것을 상속해 root와 통계만 바꾼다:
+
+```yaml
+# configs/tiles_b5_crop_c1_composite.yaml (현재 활성 예시)
+_base_: [tiles_b5_crop_rgb_v3.yaml]   # 클래스 가중·경계 손실 0.3·증강 강화 상속
+project:
+  name: farmland_tiles_b5_crop_c1_composite
+  output_dir: outputs/tiles_segformer_b5_crop_c1_composite
+dataset:
+  root_dir: "../data/farmmap_c1_composite"
+  mean: [0.193, 0.1802, 0.1653]   # train 표본 실측 (아래 통계 명령 참고)
+  std: [0.154, 0.1412, 0.1364]
+training:
+  min_epochs: 0                    # 0=조기종료(patience 15)에 맡김
+```
 
 ```bash
-python -m src.prepare_data --config configs/default.yaml \
-  --max-samples 100 --tile-output outputs/tiles \
-  --overlap 128 --max-background-fraction 0.95
+# 통계 계산 (config의 mean/std)
+python - <<'EOF'
+import csv, numpy as np, rasterio
+from pathlib import Path
+root = Path("../data/<데이터셋이름>")
+with (root/"manifest.csv").open(newline="", encoding="utf-8-sig") as s:
+    train = [r["tile"] for r in csv.DictReader(s) if r["split"] == "train"]
+rng = np.random.default_rng(42); sums = np.zeros(3); squares = np.zeros(3); pixels = 0
+for name in rng.choice(train, min(300, len(train)), replace=False):
+    v = rasterio.open(root/"images"/f"{name}.tif").read([1,2,3]).astype(np.float64)/255.0
+    sums += v.sum(axis=(1,2)); squares += (v**2).sum(axis=(1,2)); pixels += v.size//3
+mean = sums/pixels; print("mean:", mean.round(4).tolist(), "std:", np.sqrt(squares/pixels-mean**2).round(4).tolist())
+EOF
+
+# 학습 (다중 GPU)
+torchrun --nproc_per_node=4 -m src.train --config configs/tiles_b5_crop_c1_composite.yaml
+
+# 중단 후 재개
+torchrun --nproc_per_node=4 -m src.train --config <같은 config> \
+    --resume outputs/<프로젝트>/checkpoints/last.pt
 ```
 
-계산된 `outputs/segformer_b4/data_stats.json`의 mean/std를 `configs/dataset.yaml`에 반영한다.
+- AMP는 bf16 기본 (`training.amp_dtype`) — fp16 오버플로 NaN 방지. NaN 배치는 0-손실로 건너뛰고 카운트
+- best.pt는 `mean_iou_no_background` 기준. 이 지표는 빈 클래스(인삼 등)를 0으로 포함하므로
+  절대값이 낮게 보인다 — 클래스별 IoU는 `logs/history.csv` 참고
 
-## 학습
-
-기본 `configs/model.yaml`은 `model.name=segformer`, `checkpoint=b4.h5`, `h5_architecture=b4`다. 이 파일은 TensorFlow/Keras 형식의 Hugging Face SegFormer-B4 ADE20K 가중치이며, `h5py`로 직접 읽어 dense kernel은 전치하고 convolution kernel은 PyTorch 배열 순서로 변환한다. H5 encoder의 stage 깊이 `[3, 8, 27, 3]`도 자동 검증한다. TensorFlow 런타임은 필요하지 않다. H5의 ADE20K 150클래스 head는 현재 데이터셋 클래스 수와 다르므로 폐기하고 농경지 head를 새로 초기화한다. 따라서 `b4.h5`는 학습 초기 가중치이며, 실제 추론에는 학습 후 생성되는 `best.pt`를 사용한다. SegFormer의 저해상도 logits는 JSON raster mask와 정확히 맞도록 모델 어댑터에서 입력 크기로 복원된다.
-
-H5 파일을 다른 위치에 둔 경우 다음처럼 지정한다.
+## 3. 평가·시각화
 
 ```bash
-python -m src.train --config configs/default.yaml \
-  --set model.checkpoint=/data/models/b4.h5
+# test split 정량 평가 → metrics/test/class_metrics.csv (클래스별 P/R/F1/IoU)
+python -m src.test --config <config> --checkpoint outputs/<프로젝트>/checkpoints/best.pt
+
+# GT vs 예측 비교 패널 (실행마다 무작위 표본, 빈 타일 자동 제외)
+python -m src.visualize_tiles --config <config> --checkpoint <best.pt> --split test --count 20
+# --sample-seed N: 표본 고정 | --min-foreground 0.1: 더 알찬 타일만 | --no-watershed: 순수 모델 출력
 ```
 
-CPU 또는 단일 GPU:
+## 4. 전체 장면 추론
 
 ```bash
-python -m src.train --config configs/default.yaml
+python -m src.infer --config <config> --checkpoint <best.pt> \
+    --input scene_RGB.tif \
+    --output-mask outputs/infer/<이름>_mask.tif \
+    --output-vector outputs/infer/<이름>_parcels.gpkg \
+    --set output.save_probability_map=false
 ```
 
-두 GPU DDP:
+산출물: `_mask.tif`(8클래스, 경계 제거·필지 맞닿음), `_raw.tif`(원시 argmax, 진단용),
+`_instances.tif`(필지 ID), `_parcels.gpkg`(폴리곤: class_id/class_name/area_m2, 평활+직선화).
+
+동작 특성:
+- 스트리밍 추론(RAM ~10GB), 전부-검정 창 스킵, Hann 겹침 병합(이음새 없음), 단계별 진행 로그
+- watershed로 인접 필지 분리 후 경계 클래스는 필지로 흡수(`erase_boundary`)
+- 벡터는 marching-squares 서브픽셀 평활(`vector_smooth_px`) + Douglas-Peucker(`vector_simplify_m`)
+
+속도 참고 (0.5m, GPU 1장): 5×5km ≈ 5~9분, 전체 장면(16×14km) ≈ 30~60분.
+병목은 GPU가 아니라 CPU 후처리(watershed)이며 `watershed_downscale: 2`(기본)로 3배 가속돼 있다.
+
+### 주요 추론 튜닝 (configs/default.yaml)
+
+| 키 | 기본 | 용도 |
+|---|---|---|
+| `inference.watershed_seed_erosion_iterations` | 1 | 인접 필지 병합 억제 (심하면 2) |
+| `inference.watershed_seed_boundary_maximum` | 0.15 | 낮추면 분리 강해짐 (0.08) |
+| `inference.watershed_surface_sigma` | 1.5 | 분할선 잔떨림 평활 |
+| `inference.watershed_downscale` | 2 | 분수령 계산 축소 가속 (1=정밀) |
+| `inference.erase_boundary` | true | 경계 클래스 산출물 제거 |
+| `inference.cloud_mask` | false | 구름 지역 예측 비우기 |
+| `output.vector_smooth_px` / `vector_simplify_m` | 1.5 / 1.5 | 폴리곤 계단 제거·직선화 |
+| `postprocess.min_area` | {1:100, 2:100} | 클래스별 최소 면적(㎡) |
+
+재벡터화만 다시 (추론 없이 폴리곤 옵션 변경):
 
 ```bash
-torchrun --standalone --nproc_per_node=2 -m src.train --config configs/default.yaml
+python -m src.vectorize --instances <_instances.tif> --classes <_mask.tif> \
+    --output parcels.gpkg --smooth 1.5 --simplify 1.5
+# 클래스 이름은 8클래스 기본 내장, 경계(7)는 기본 제외(--drop-classes)
 ```
 
-DDP 실행 전 반드시 CUDA가 두 GPU를 인식하는지 확인한다. `False`이면 `torchrun`을 실행하지 않는다.
+## 트러블슈팅
 
-```bash
-python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.device_count())"
-```
-
-체크포인트 재개와 CLI 우선 덮어쓰기:
-
-```bash
-python -m src.train --config configs/default.yaml \
-  --resume outputs/segformer_b4/checkpoints/last.pt \
-  --set training.batch_size=4 \
-  --set training.epochs=150
-```
-
-기존 U-Net으로 학습하려면 다음처럼 모델과 사전학습 옵션을 함께 변경한다.
-
-```bash
-python -m src.train --config configs/default.yaml \
-  --set model.name=unet \
-  --set model.pretrained=false
-```
-
-`outputs/segformer_b4/checkpoints/best.pt`와 `last.pt`에는 모델, optimizer, scheduler, AMP scaler, epoch, best metric, 모델/데이터 설정, 클래스 목록, Git hash 및 UTC 저장시각이 포함된다. 기존 U-Net 체크포인트와 섞이지 않도록 SegFormer 출력 폴더를 분리한다.
-
-## 검증과 테스트
-
-```bash
-python -m src.validate --config configs/default.yaml --checkpoint outputs/segformer_b4/checkpoints/best.pt
-python -m src.test --config configs/default.yaml --checkpoint outputs/segformer_b4/checkpoints/best.pt
-```
-
-JSON에는 전체 pixel accuracy와 배경을 제외한 `foreground_pixel_accuracy`, precision, recall, F1, Dice, 클래스 IoU, mean IoU, frequency-weighted IoU, confusion matrix가 저장된다. CSV에는 클래스별 지표가 저장되고 최저 IoU 클래스가 로그에 표시된다.
-
-## 추론
-
-현재 원천 영상은 공간정보가 없으므로 대응하는 기존 `_META.json`을 지정한다.
-
-```bash
-python -m src.infer \
-  --config configs/default.yaml \
-  --checkpoint outputs/segformer_b4/checkpoints/best.pt \
-  --input "../data/01.데이터/2.Validation/원천데이터/VS_항공사진_FGT_512픽셀/LC_GS_AP25_34801025_006_2019_FGT.tif" \
-  --reference-meta "../data/01.데이터/2.Validation/라벨링데이터/항공사진_FGT_512픽셀_Meta/LC_GS_AP25_34801025_006_2019_FGT_META.json" \
-  --output-mask outputs/segformer_b4/predictions/sample.tif \
-  --output-vector outputs/segformer_b4/predictions/sample.gpkg \
-  --tile-size 512 --overlap 128 --batch-size 8
-```
-
-기본 설정은 입력 영상을 중간 파일 없이 `0.25 m/pixel` 가상 격자로 리샘플링한 뒤 추론한다. 원본이 EPSG:5186, EPSG:5179 같은 투영 CRS이면 원본 CRS를 유지한다. EPSG:4326처럼 각도 단위인 입력은 미터 단위 목표 CRS를 반드시 지정한다.
-
-```bash
-# 투영 CRS 영상: 원본 CRS를 유지하면서 25cm/pixel로 추론
-python -m src.infer \
-  --config configs/default.yaml \
-  --checkpoint outputs/segformer_b4/checkpoints/best.pt \
-  --input input_1m.tif \
-  --output-mask outputs/prediction_25cm.tif \
-  --target-resolution-m 0.25 \
-  --resampling bilinear
-
-# 경위도 영상: 한국 중부원점 투영 CRS로 변환하면서 25cm/pixel로 추론
-python -m src.infer \
-  --config configs/default.yaml \
-  --checkpoint outputs/segformer_b4/checkpoints/best.pt \
-  --input input_wgs84.tif \
-  --output-mask outputs/prediction_25cm.tif \
-  --target-resolution-m 0.25 \
-  --target-crs EPSG:5179
-```
-
-`bilinear`는 RGB/연속 영상의 기본값이다. 10m 영상을 25cm로 확대하면 픽셀 수가 가로·세로 각각 40배가 되지만 실제 공간 세부정보가 증가하지는 않는다. 과도한 메모리 사용은 `inference.max_resampled_pixels`로 차단하며, 넓은 영상은 먼저 공간 타일로 분할해야 한다. 원본 해상도로 추론하려면 `--set inference.target_resolution_m=null`을 사용한다.
-
-출력:
-
-- `sample_raw.tif`: 후처리 전 argmax 클래스
-- `sample.tif`: 후처리 후 클래스
-- `sample_probability.tif`: 3밴드 클래스 확률
-- `sample_instances.tif`: 연결요소 인스턴스 ID
-- `sample.gpkg`: `class_id`, `instance_id`, `area_m2` 폴리곤
-
-GPU OOM 시 추론 batch size는 자동으로 절반씩 감소한다. 타일 overlap은 덮어쓰지 않고 Hann 가중 확률 평균으로 병합한다.
-전경 예측 확률이 `inference.confidence_threshold`보다 낮으면 배경으로 되돌린다.
-
-### 추론 결과 시각화
-
-다음 명령은 SegFormer 추론을 수행한 뒤 원본 RGB, 컬러 mask, overlay, 최대 클래스 신뢰도와 논·밭 확률 PNG를 한 번에 생성한다. 원본 TIF에 공간정보가 없으므로 `_META.json`과 출력 raster의 CRS·Transform·크기가 일치하지 않으면 시각화를 중단한다.
-
-```bash
-python -m src.infer_visualize \
-  --config configs/default.yaml \
-  --checkpoint outputs/segformer_b4/checkpoints/best.pt \
-  --input "../data/01.데이터/2.Validation/원천데이터/VS_항공사진_FGT_512픽셀/LC_GS_AP25_34801025_006_2019_FGT.tif" \
-  --reference-meta "../data/01.데이터/2.Validation/라벨링데이터/항공사진_FGT_512픽셀_Meta/LC_GS_AP25_34801025_006_2019_FGT_META.json" \
-  --output-dir outputs/segformer_b4/predictions/visualized_sample \
-  --batch-size 8
-```
-
-PNG 출력:
-
-- `*_rgb.png`: 표시용 RGB
-- `*_mask_color.png`: 초록=논, 주황=밭
-- `*_overlay.png`: 배경은 원본 그대로 유지한 mask overlay
-- `*_confidence.png`: 픽셀별 최대 클래스 확률
-- `*_prob_1_paddy.png`, `*_prob_2_field.png`: 클래스별 확률
-- `*_panel.png`: RGB, mask, overlay, confidence 2×2 비교
-
-Validation에서 논·밭 JSON이 실제로 존재하는 샘플 10장을 seed 42로 재현 가능하게 선택해 일괄 추론하려면 다음을 실행한다. 모델 checkpoint는 한 번만 GPU에 로드해 모든 샘플에 재사용한다.
-
-```bash
-python -m src.infer_visualize \
-  --config configs/default.yaml \
-  --checkpoint outputs/segformer_b4/checkpoints/best.pt \
-  --split validation \
-  --sample-count 10 \
-  --output-dir outputs/segformer_b4/predictions/validation_10 \
-  --batch-size 8
-```
-
-각 샘플은 `01_<영상명>/`부터 별도 폴더에 저장되며, 선택된 원본·JSON·Meta·panel 경로는 `samples.csv`에 기록된다. 해당 split에 유효 샘플이 10개보다 적으면 가능한 샘플만 처리한다.
-
-## Loss 선택
-
-기본은 CE + Dice + 작은 boundary loss다. CE는 안정적인 다중 클래스 기준, Dice는 논/밭 픽셀 불균형 보완, boundary는 필지 경계 민감도를 높인다. Focal은 어려운 픽셀에 집중하지만 노이즈에 과민할 수 있고, Tversky는 FP/FN 비용을 조절하지만 alpha/beta 튜닝이 필요하다. 모든 조합은 `configs/model.yaml`의 weight로 켜고 끈다.
-
-학습 지표는 `outputs/segformer_b4/logs/history.csv`와 `latest_metrics.json`에 기록된다. `logging.wandb: true`로 바꾸고 로그인하면 동일한 epoch 지표를 W&B에도 기록한다.
-
-## Docker
-
-```bash
-docker build -t farmland-segmentation .
-docker run --rm --gpus all \
-  -v "$PWD/../data/01.데이터:/data/01.데이터:ro" \
-  -v "$PWD/configs:/workspace/configs:ro" \
-  -v "$PWD/outputs:/workspace/outputs" \
-  farmland-segmentation
-```
-
-## 테스트
-
-```bash
-python -m pytest -q
-```
-
-pytest가 없는 최소 환경에서도 테스트 본문은 unittest 호환이다.
-
-```bash
-python -m unittest discover -v
-```
-
-## 오류 해결
-
-- `CRS/Transform이 없습니다`: 기존 대응 `_META.json`을 `--reference-meta`로 전달한다.
-- `영상/JSON/Meta 파일명이 대응되지 않습니다`: 영상 stem, 라벨 JSON stem, `_META`를 제외한 Meta stem이 같은지 확인한다.
-- `입력 밴드가 부족합니다`: `dataset.channel_indices`와 실제 밴드 수를 확인한다. 현재 항공영상은 `[1,2,3]` RGB다.
-- CUDA OOM: batch size 또는 tile size를 줄이고 gradient accumulation을 늘린다.
-- `gloo ... Connection closed by peer`: 다른 rank가 먼저 실패한 후속 오류다. 현재 코드는 rank0 원본 traceback을 기록하며, CUDA가 보이지 않는 CPU DDP는 시작 전에 차단한다. 컨테이너 GPU 연결과 CUDA PyTorch 설치를 먼저 확인한다.
-- `ModuleNotFoundError: tqdm`: 최신 코드에서는 진행 막대만 자동 비활성화된다. 기존 코드라면 `python -m pip install tqdm`을 실행한다.
-- H5 구조 불일치: `b4.h5`의 encoder 깊이가 B4 `[3,8,27,3]`인지 확인한다. 설정은 `model.h5_architecture=b4`여야 한다.
-- `Grad strides do not match bucket view strides`: SegFormer의 마지막 1×1 classifier가 만드는 singleton stride와 DDP bucket layout 차이다. 최신 모델 어댑터는 classifier gradient를 표준 contiguous stride로 정규화한다.
-- 체크포인트 구조 불일치: checkpoint의 model/dataset 설정과 현재 resolved config를 비교한다.
+- **VWorld 503**: 서버 간헐 장애. 연속 20타일 실패 시 자동 중단되니 잠시 후 재실행
+- **추론 중 Killed**: RAM 부족. `output.save_probability_map=false`(스트리밍 경로) 확인
+- **학습 NaN**: bf16 기본으로 해소. `skipped` 카운터가 계속 늘면 데이터/LR 점검
+- **gdal_translate 없음**: rasterio로 대체 (Window 읽기 → 새 GeoTIFF 쓰기)
+- **타일 이름 충돌(병합 시)**: `make_tiles --scene`으로 장면별 접두어를 다르게
+- **폴리곤에 경계 클래스가 보임**: 옛 추론 산출물. 최신 코드로 재추론
